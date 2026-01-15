@@ -21,3 +21,30 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# =========================
+# Python / AI / ML files
+# =========================
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+env/
+
+# Trained models
+*.h5
+*.pkl
+*.pt
+*.onnx
+
+# Datasets
+*.zip
+*.rar
+*.7z
+images/
+dataset/
+data/
+
