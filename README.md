@@ -103,3 +103,10 @@ Public datasets used in this project can be linked or shared upon request.
   - Source: UCI Machine Learning Repository  
 - Indian Liver Patient Dataset (ILPD)  
   - Source: UCI Machine Learning Repository  
+
+---
+
+## Contributors
+- Maansi S 
+- Meghana P
+- Ianna Elizabeth Reni
