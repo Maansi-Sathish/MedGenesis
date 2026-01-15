@@ -1,70 +1,105 @@
-# Getting Started with Create React App
+# 🏥 MedGenesis
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+MedGenesis is an AI-powered hospital management system that integrates patient admission, bed management, disease prediction using machine learning, and medical image analysis using deep learning. The system is designed to assist healthcare professionals by combining efficient hospital operations with intelligent diagnostic support.
 
-## Available Scripts
+---
 
-In the project directory, you can run:
+## 🚀 Features
 
-### `npm start`
+- 🧍 Patient Admission System  
+  - Enter patient name, age, gender, and symptoms  
+  - Automatic bed allocation  
+  - Admission date and time recorded  
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+- 🛏️ Bed Management  
+  - Tracks available and occupied beds in real time  
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+- 🧠 Disease Prediction (Machine Learning)  
+  - Heart disease prediction  
+  - Kidney disease prediction  
+  - Liver disease prediction  
+  - Breast cancer prediction  
 
-### `npm test`
+- 🩻 Medical Image Analysis (Deep Learning)  
+  - Chest X-ray analysis (Pneumonia detection)  
+  - Brain tumor detection using MRI images  
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+- 📋 Patient Records Dashboard  
+  - Centralized view of all admitted patients  
+  - Displays diagnosis results, bed number, and admission time  
 
-### `npm run build`
+- 🌐 Full-Stack Web Application  
+  - Backend APIs using FastAPI  
+  - Frontend built with React  
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+---
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+## 🏗️ How MedGenesis Works
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+1. Patient details are entered through the React frontend.  
+2. FastAPI backend assigns an available bed and stores admission data.  
+3. Machine learning models predict possible diseases based on patient data.  
+4. Deep learning models analyze uploaded medical images.  
+5. Results are stored in PostgreSQL and displayed on the dashboard.  
 
-### `npm run eject`
+---
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+## 🧠 AI & ML Components
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+| Module | Technique Used |
+|------|----------------|
+| Disease Prediction | Machine Learning (Random Forest) |
+| Image Analysis | Convolutional Neural Networks (CNNs) |
+| Data Processing | Pandas, NumPy |
+| Model Storage | Joblib (`.pkl`), TensorFlow/PyTorch models |
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+---
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+## ⚙️ Tech Stack
 
-## Learn More
+### Frontend
+- React.js  
+- Tailwind CSS / Material UI  
+- Axios  
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+### Backend
+- FastAPI (Python)  
+- RESTful APIs  
+- Uvicorn  
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+### Database
+- PostgreSQL (SQL-based, scalable)
 
-### Code Splitting
+### Machine Learning & Deep Learning
+- Scikit-learn  
+- TensorFlow / Keras  
+- OpenCV  
+- Pandas, NumPy  
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+---
 
-### Analyzing the Bundle Size
+## 🧪 Models & Datasets
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+Due to GitHub file size limitations, trained model files (`.h5`, `.pkl`)  
+and image datasets are not included in this repository.
 
-### Making a Progressive Web App
+The models can be recreated by running the training scripts provided.  
+Public datasets used in this project can be linked or shared upon request.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+### Datasets Used
 
-### Advanced Configuration
+#### Image Datasets
+- Chest X-ray Dataset  
+  - Source: Kaggle  
+- Brain Tumor MRI Dataset  
+  - Source: Kaggle  
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+#### Tabular Medical Datasets
+- Cleveland Heart Disease Dataset  
+  - Source: UCI Machine Learning Repository  
+- Chronic Kidney Disease (CKD) Dataset  
+  - Source: UCI Machine Learning Repository  
+- Breast Cancer Wisconsin (Diagnostic) Dataset  
+  - Source: UCI Machine Learning Repository  
+- Indian Liver Patient Dataset (ILPD)  
+  - Source: UCI Machine Learning Repository  
