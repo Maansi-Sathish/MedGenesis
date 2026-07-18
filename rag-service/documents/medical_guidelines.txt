@@ -1,0 +1,7 @@
+WHO Clinical Guideline: Fasting plasma glucose values between 100 mg/dL and 125 mg/dL indicate impaired fasting glucose (pre-diabetes). A fasting glucose value of 126 mg/dL or higher meets the diagnostic threshold for diabetes mellitus.
+
+ADA Recommendation: For patients presenting with random or fasting glucose levels exceeding 120 mg/dL, an HbA1c screening test is explicitly advised to monitor long-term trends.
+
+American Heart Association Blood Pressure Categories: Normal blood pressure is less than 120/80 mmHg. Elevated blood pressure ranges from 120-129 systolic and less than 80 diastolic. Hypertension Stage 1 is 130-139 systolic or 80-89 diastolic.
+
+MedlinePlus Patient Guidelines: Common symptoms of early pre-diabetes or elevated glucose levels include subtle increases in thirst, frequent urination, and unexplained fatigue[cite: 1].
