@@ -1,0 +1,9 @@
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+rag-service/.env
+rag-service/vector_store/
+rag-service/__pycache__/
+**/__pycache__/
+.pytest_cache/
+.vscode/
