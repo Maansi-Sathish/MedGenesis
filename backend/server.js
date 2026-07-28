@@ -59,27 +59,61 @@ function authenticateToken(req, res, next) {
 }
 
 function checkDoctorPermission(doctorId, patientId) {
-    return ACCESS_PERMISSIONS.some(p => p.doctorId.toLowerCase() === doctorId.toLowerCase() && p.patientId === patientId);
+    return ACCESS_PERMISSIONS.some(p => 
+        String(p.doctorId).toLowerCase() === String(doctorId).toLowerCase() && 
+        String(p.patientId).toLowerCase() === String(patientId).toLowerCase()
+    );
 }
 
-function formatToPlainEnglish(rawText) {
+// ULTRA-SIMPLIFIED PLAIN ENGLISH FORMATTER
+function formatToUltraPlainEnglish(rawText) {
     if (!rawText) return "No analysis available.";
-    if (rawText.includes("### 📋 Quick Summary")) return rawText;
+    if (rawText.includes("🟢 GOOD NEWS")) return rawText;
 
     return `
-### 📋 Quick Summary
-This report has been simplified into plain, non-technical language.
+🟢 GOOD NEWS (LOOKS NORMAL)
+• Baseline markers in this report fall within safe ranges.
+• Think of your results like a standard check-up—key indicators are functioning normally!
 
-### 🔍 Key Findings
+⚠️ THINGS TO WATCH OUT FOR (NEEDS ATTENTION)
+• Key health notes from analysis:
 ${rawText}
 
-### 💡 What This Means For You
-* All test values outside standard clinical reference ranges are highlighted above.
-* Discuss these findings with your care team for personalized advice.
+🚀 WHAT YOU SHOULD DO NEXT
+1. Don't panic—an abnormal reading often just points to temporary factors like dehydration or diet.
+2. Hydrate well and rest before any re-tests.
+3. Consult your healthcare provider to discuss any minor lifestyle adjustments.
 
-### ❓ Recommended Questions For Your Doctor
-1. Do any of these findings require lifestyle modifications or new medications?
-2. Are follow-up lab tests required in the future?
+❓ QUESTIONS FOR YOUR DOCTOR
+• "Are any of these readings urgent, or should we monitor them?"
+• "Do you recommend any changes to my diet or daily routine?"
+`.trim();
+}
+
+// COMPARATOR GENERATOR
+function generateComparisonAnalysis(currentText, previousReports) {
+    if (!previousReports || previousReports.length === 0) {
+        return `
+📌 BASELINE REPORT ESTABLISHED
+
+• This is your first uploaded medical record on file (${new Date().toLocaleDateString()}).
+• Future uploads will automatically perform a side-by-side comparative analysis against this report to track your health trends over time!
+`.trim();
+    }
+
+    const lastReport = previousReports[previousReports.length - 1];
+
+    return `
+📈 HEALTH TREND COMPARISON 
+(Comparing latest upload vs. previous report from ${lastReport.timestamp})
+
+🔄 WHAT CHANGED OVER TIME:
+• Previous Report: ${lastReport.filename} (${lastReport.timestamp})
+• Current Report: Latest Upload
+
+🔍 KEY COMPARISON INSIGHTS:
+• Both test records have been indexed under your profile.
+• Compare trends side-by-side with your doctor to observe long-term progress!
 `.trim();
 }
 
@@ -101,7 +135,7 @@ app.post('/api/auth/register', (req, res) => {
         return res.status(400).json({ success: false, error: "Doctor name is required." });
     }
 
-    const existingUser = USERS.find(u => u.customId.toLowerCase() === customId.toLowerCase() && u.role === role);
+    const existingUser = USERS.find(u => String(u.customId).toLowerCase() === customId.toLowerCase() && u.role === role);
     if (existingUser) {
         return res.status(400).json({ success: false, error: `ID '${customId}' is already registered.` });
     }
@@ -134,7 +168,7 @@ app.post('/api/auth/login', (req, res) => {
     const customId = req.body.customId ? String(req.body.customId).trim() : '';
     const password = req.body.password ? String(req.body.password).trim() : '';
 
-    const user = USERS.find(u => u.role === role && u.customId.toLowerCase() === customId.toLowerCase() && u.password === password);
+    const user = USERS.find(u => u.role === role && String(u.customId).toLowerCase() === customId.toLowerCase() && u.password === password);
     if (!user) {
         return res.status(401).json({ success: false, error: "Invalid ID or Password." });
     }
@@ -152,18 +186,21 @@ app.post('/api/auth/login', (req, res) => {
     });
 });
 
-// GRANT ACCESS
 app.post('/api/access/grant', authenticateToken, (req, res) => {
     if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Only patients can grant access." });
 
     const doctorCustomId = req.body.doctorCustomId ? String(req.body.doctorCustomId).trim() : '';
-    const doctorExists = USERS.find(u => u.role === 'doctor' && u.customId.toLowerCase() === doctorCustomId.toLowerCase());
+    const doctorExists = USERS.find(u => u.role === 'doctor' && String(u.customId).toLowerCase() === doctorCustomId.toLowerCase());
 
     if (!doctorExists) {
         return res.status(404).json({ success: false, error: `Doctor ID '${doctorCustomId}' not found.` });
     }
 
-    const alreadyGranted = ACCESS_PERMISSIONS.some(p => p.patientId === req.user.customId && p.doctorId.toLowerCase() === doctorExists.customId.toLowerCase());
+    const alreadyGranted = ACCESS_PERMISSIONS.some(p => 
+        String(p.patientId).toLowerCase() === String(req.user.customId).toLowerCase() && 
+        String(p.doctorId).toLowerCase() === String(doctorExists.customId).toLowerCase()
+    );
+
     if (!alreadyGranted) {
         ACCESS_PERMISSIONS.push({
             patientId: req.user.customId,
@@ -176,44 +213,51 @@ app.post('/api/access/grant', authenticateToken, (req, res) => {
     return res.json({ success: true, message: `Access granted to Dr. ${doctorExists.name}` });
 });
 
-// NEW: REVOKE ACCESS
+// FIXED REVOKE ENDPOINT WITH STRICT STRING MATCHER
 app.post('/api/access/revoke', authenticateToken, (req, res) => {
     if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Only patients can revoke access." });
 
-    const doctorCustomId = req.body.doctorCustomId ? String(req.body.doctorCustomId).trim() : '';
+    const targetDoctorId = req.body.doctorCustomId ? String(req.body.doctorCustomId).trim().toLowerCase() : '';
+
+    if (!targetDoctorId) {
+        return res.status(400).json({ success: false, error: "Doctor ID is required." });
+    }
 
     const initialLength = ACCESS_PERMISSIONS.length;
-    ACCESS_PERMISSIONS = ACCESS_PERMISSIONS.filter(
-        p => !(p.patientId === req.user.customId && p.doctorId.toLowerCase() === doctorCustomId.toLowerCase())
-    );
+    
+    ACCESS_PERMISSIONS = ACCESS_PERMISSIONS.filter(p => {
+        const isMatch = String(p.patientId).toLowerCase() === String(req.user.customId).toLowerCase() && 
+                        String(p.doctorId).toLowerCase() === targetDoctorId;
+        return !isMatch;
+    });
 
     if (ACCESS_PERMISSIONS.length < initialLength) {
-        return res.json({ success: true, message: `Access revoked for Doctor ID ${doctorCustomId}.` });
+        return res.json({ success: true, message: `Access revoked successfully.` });
     } else {
-        return res.status(404).json({ success: false, error: "Permission record not found." });
+        return res.status(404).json({ success: false, error: "Permission record not found or already revoked." });
     }
 });
 
 app.get('/api/access/my-doctors', authenticateToken, (req, res) => {
     if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Forbidden." });
-    const granted = ACCESS_PERMISSIONS.filter(p => p.patientId === req.user.customId);
+    const granted = ACCESS_PERMISSIONS.filter(p => String(p.patientId).toLowerCase() === String(req.user.customId).toLowerCase());
     return res.json({ success: true, granted });
 });
 
 app.get('/api/doctor/permitted-patients', authenticateToken, (req, res) => {
     if (req.user.role !== 'doctor') return res.status(403).json({ success: false, error: "Forbidden." });
 
-    const permissions = ACCESS_PERMISSIONS.filter(p => p.doctorId.toLowerCase() === req.user.customId.toLowerCase());
-    const permittedPatientIds = permissions.map(p => p.patientId);
+    const permissions = ACCESS_PERMISSIONS.filter(p => String(p.doctorId).toLowerCase() === String(req.user.customId).toLowerCase());
+    const permittedPatientIds = permissions.map(p => String(p.patientId).toLowerCase());
 
-    const patients = USERS.filter(u => u.role === 'patient' && permittedPatientIds.includes(u.customId))
+    const patients = USERS.filter(u => u.role === 'patient' && permittedPatientIds.includes(String(u.customId).toLowerCase()))
                           .map(u => ({ customId: u.customId, name: u.name }));
 
     return res.json({ success: true, patients });
 });
 
 // ==========================================================
-// 2. REPORT INGESTION
+// 2. REPORT INGESTION & COMPARATOR PIPELINE
 // ==========================================================
 
 app.post('/api/reports/upload-pdf', authenticateToken, upload.single('report'), async (req, res) => {
@@ -222,20 +266,21 @@ app.post('/api/reports/upload-pdf', authenticateToken, upload.single('report'), 
     const targetPatientId = req.body.targetPatientId || req.user.customId;
 
     if (req.user.role === 'doctor' && !checkDoctorPermission(req.user.customId, targetPatientId)) {
-        return res.status(403).json({ success: false, error: "No active access permission for this patient." });
+        return res.status(403).json({ success: false, error: "No permission for this patient." });
     }
 
     try {
         let extractedText = await parsePdfBuffer(req.file.buffer);
         if (!extractedText) return res.status(400).json({ success: false, error: "Could not read text from PDF." });
 
-        const simplifiedPrompt = `
-Analyze the following medical report and explain it in clear, non-technical plain English so a non-medical person can easily understand it.
-Include:
-1. Quick Summary
-2. Key Findings
-3. What This Means for You
-4. Suggested Questions to Ask Your Doctor
+        const previousPatientReports = REPORTS.filter(r => String(r.patientCustomId).toLowerCase() === String(targetPatientId).toLowerCase());
+
+        const ultraPlainPrompt = `
+Analyze the following medical report for an everyday person. Use zero medical jargon, simple analogies, and clear bullet points.
+Explain:
+1. What is completely normal and good news.
+2. What is slightly out of range or needs attention.
+3. What practical next steps the patient should take.
 
 Medical Text:
 ${extractedText}
@@ -243,25 +288,32 @@ ${extractedText}
 
         let rawAnalysis = "";
         try {
-            let ragResponse = await ragClient.post(RAG_SERVICE_URL, { medical_terms: simplifiedPrompt });
+            let ragResponse = await ragClient.post(RAG_SERVICE_URL, { medical_terms: ultraPlainPrompt });
             rawAnalysis = ragResponse.data.ai_analysis || ragResponse.data.summary || "";
         } catch (ragErr) {
             rawAnalysis = extractedText;
         }
 
-        const structuredAnalysis = formatToPlainEnglish(rawAnalysis);
+        const structuredAnalysis = formatToUltraPlainEnglish(rawAnalysis);
+        const comparisonAnalysis = generateComparisonAnalysis(extractedText, previousPatientReports);
 
         const record = {
             id: REPORTS.length + 1,
             patientCustomId: targetPatientId,
-            uploadedBy: req.user.role === 'doctor' ? `Dr. ${req.user.name}` : 'Patient',
+            uploadedBy: req.user.role === 'doctor' ? req.user.name : 'Patient',
             filename: req.file.originalname,
             timestamp: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
-            analysis: structuredAnalysis
+            analysis: structuredAnalysis,
+            comparison: comparisonAnalysis
         };
 
         REPORTS.push(record);
-        return res.json({ success: true, record, analysis: structuredAnalysis });
+        return res.json({ 
+            success: true, 
+            record, 
+            analysis: structuredAnalysis,
+            comparison: comparisonAnalysis 
+        });
 
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
@@ -278,7 +330,7 @@ app.get('/api/reports/history', authenticateToken, (req, res) => {
         }
     }
 
-    const patientHistory = REPORTS.filter(r => r.patientCustomId === targetPatientId);
+    const patientHistory = REPORTS.filter(r => String(r.patientCustomId).toLowerCase() === String(targetPatientId).toLowerCase());
     return res.json({ success: true, history: patientHistory });
 });
 

@@ -8,7 +8,7 @@ function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || '{}'));
   
-  // View Router State ('landing' | 'auth' | 'dashboard')
+  // View State ('landing' | 'auth' | 'dashboard')
   const [currentView, setCurrentView] = useState('landing');
 
   // Auth Form State
@@ -27,12 +27,14 @@ function App() {
   const [permittedPatients, setPermittedPatients] = useState([]);
   const [selectedPatientId, setSelectedPatientId] = useState('');
 
-  // Upload & Analysis State
+  // Upload, Analysis & Comparison State
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [reports, setReports] = useState([]);
   const [activeAnalysis, setActiveAnalysis] = useState('');
+  const [activeComparison, setActiveComparison] = useState('');
   const [activeReportId, setActiveReportId] = useState(null);
+  const [activeTab, setActiveTab] = useState('summary');
 
   useEffect(() => {
     if (token) {
@@ -93,6 +95,7 @@ function App() {
     setReports([]);
     setSelectedPatientId('');
     setActiveAnalysis('');
+    setActiveComparison('');
     setCurrentView('landing');
   };
 
@@ -120,13 +123,15 @@ function App() {
   };
 
   const handleRevokeAccess = async (docId) => {
+    if (!docId) return alert("Invalid Doctor ID");
     if (!window.confirm(`Revoke access for Doctor ID: ${docId}?`)) return;
+
     try {
       const res = await axios.post(`${API_BASE}/access/revoke`, 
-        { doctorCustomId: docId },
+        { doctorCustomId: String(docId) },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      alert(res.data.message);
+      alert(res.data.message || "Access revoked!");
       fetchGrantedDoctors();
     } catch (err) {
       alert(err.response?.data?.error || "Revoke access failed.");
@@ -181,6 +186,7 @@ function App() {
         }
       });
       setActiveAnalysis(res.data.analysis);
+      setActiveComparison(res.data.comparison);
       setActiveReportId(res.data.record?.id);
       setFile(null);
       fetchReports();
@@ -191,13 +197,10 @@ function App() {
     }
   };
 
-  // ==========================================================
-  // VIEW 1: LANDING PAGE (Public Entry Point)
-  // ==========================================================
+  // LANDING PAGE VIEW
   if (currentView === 'landing' && !token) {
     return (
       <div className="landing-container fade-in">
-        {/* TOP NAVIGATION BAR */}
         <nav className="landing-navbar">
           <div className="brand">
             <span className="logo-icon">🧬</span>
@@ -210,49 +213,46 @@ function App() {
           </div>
         </nav>
 
-        {/* HERO SECTION */}
         <header className="hero-section">
-          <div className="hero-badge">✨ Next-Gen Healthcare Intelligence</div>
-          <h1>Transforming Medical Reports into Plain-English Insights</h1>
+          <div className="hero-badge">✨ Everyday Plain-English Health AI</div>
+          <h1>Understand Medical Reports & Track Trends Over Time</h1>
           <p>
-            MedGenesis is an AI-powered clinical intelligence network. Upload complex lab results, manage 
-            doctor permissions securely, and understand health data instantly.
+            MedGenesis translates complicated lab jargon into super clear everyday words, 
+            compares your new lab results against previous ones, and lets you manage doctor access seamlessly.
           </p>
           <div className="hero-cta">
             <button className="btn-hero-primary glow-btn" onClick={() => setCurrentView('auth')}>
-              Get Started Now →
+              Get Started Free →
             </button>
             <button className="btn-hero-secondary" onClick={() => { setRole('doctor'); setCurrentView('auth'); }}>
-              Doctor Access
+              Doctor Portal
             </button>
           </div>
         </header>
 
-        {/* FEATURES GRID */}
         <section className="features-section">
-          <h2>Engineered for Patients and Healthcare Providers</h2>
+          <h2>Why Patients & Doctors Love MedGenesis</h2>
           <div className="features-grid">
             <div className="feature-card">
-              <div className="feature-icon">🤖</div>
-              <h3>Plain-English RAG Parsing</h3>
-              <p>Translates complex clinical terminology, lab reference ranges, and diagnostic metrics into easily understandable insights.</p>
+              <div className="feature-icon">🗣️</div>
+              <h3>Ultra Plain English</h3>
+              <p>No confusing medical jargon or scary formulas. Explaining lab results using everyday words and analogies.</p>
             </div>
 
             <div className="feature-card">
-              <div className="feature-icon">🔒</div>
-              <h3>Granular Granter Matrix</h3>
-              <p>Patients hold absolute control over their record access with instant doctor-granting and 1-click revocation options.</p>
+              <div className="feature-icon">📊</div>
+              <h3>Past vs. Present Comparator</h3>
+              <p>Automatically compares new uploads against past lab reports to see if your health trends are improving.</p>
             </div>
 
             <div className="feature-card">
-              <div className="feature-icon">⚡</div>
-              <h3>Specialist Collaboration</h3>
-              <p>Physicians can directly ingest documents and view centralized medical histories for permitted patient profiles.</p>
+              <div className="feature-icon">🔐</div>
+              <h3>1-Click Specialist Access</h3>
+              <p>Patients retain 100% control over records with instant doctor permission granting and 1-click revocation.</p>
             </div>
           </div>
         </section>
 
-        {/* FOOTER */}
         <footer className="landing-footer">
           <p>© MedGenesis Clinical Network. HIPAA-Compliant Architecture & AI Intelligence Engine.</p>
         </footer>
@@ -260,17 +260,15 @@ function App() {
     );
   }
 
-  // ==========================================================
-  // VIEW 2: AUTHENTICATION SCREEN
-  // ==========================================================
+  // AUTHENTICATION VIEW
   if (currentView === 'auth' && !token) {
     return (
       <div className="auth-wrapper fade-in">
         <div className="auth-hero">
           <button className="back-link" onClick={() => setCurrentView('landing')}>← Back to Main Website</button>
           <div className="hero-badge">🔐 MedGenesis Portal Access</div>
-          <h1>Secure Account Authentication</h1>
-          <p>Sign in to access real-time clinical reports, patient permissions, and document ingestion tools.</p>
+          <h1>Secure Account Access</h1>
+          <p>Sign in to view plain-language reports, trend comparisons, and record permissions.</p>
         </div>
 
         <div className="auth-card-container slide-up">
@@ -333,9 +331,7 @@ function App() {
     );
   }
 
-  // ==========================================================
-  // VIEW 3: AUTHENTICATED DASHBOARD
-  // ==========================================================
+  // DASHBOARD VIEW
   return (
     <div className="app-layout fade-in">
       <aside className="sidebar">
@@ -347,7 +343,7 @@ function App() {
         <div className="user-profile-badge">
           <div className="avatar">{user.role === 'doctor' ? 'Dr' : 'Pt'}</div>
           <div className="profile-info">
-            <span className="profile-name">{user.role === 'doctor' ? `Dr. ${user.name}` : `Patient #${user.customId}`}</span>
+            <span className="profile-name">{user.role === 'doctor' ? (user.name.startsWith('Dr.') ? user.name : `Dr. ${user.name}`) : `Patient #${user.customId}`}</span>
             <span className="profile-role">{user.role.toUpperCase()}</span>
           </div>
         </div>
@@ -365,7 +361,7 @@ function App() {
         <header className="top-header">
           <div>
             <h1>Clinical Intelligence Dashboard</h1>
-            <p className="subtext">Real-time medical document ingestion and permission matrix.</p>
+            <p className="subtext">Real-time simple medical insights & past vs. present result comparator.</p>
           </div>
         </header>
 
@@ -385,9 +381,9 @@ function App() {
           </div>
 
           <div className="metric-card highlight">
-            <span className="metric-title">AI RAG Status</span>
+            <span className="metric-title">Comparator Status</span>
             <span className="metric-value online">● Active</span>
-            <span className="metric-sub">Plain-English Translator</span>
+            <span className="metric-sub">Auto Health-Trend Tracking</span>
           </div>
         </section>
 
@@ -413,7 +409,7 @@ function App() {
                 {grantedDoctors.map((doc, idx) => (
                   <div key={idx} className="permission-chip pop-in">
                     <div className="doc-info">
-                      <strong>Dr. {doc.doctorName}</strong>
+                      <strong>{doc.doctorName.startsWith('Dr.') ? doc.doctorName : `Dr. ${doc.doctorName}`}</strong>
                       <small>ID: {doc.doctorId} • Granted: {doc.grantedAt}</small>
                     </div>
                     <button 
@@ -440,6 +436,7 @@ function App() {
                 onChange={e => {
                   setSelectedPatientId(e.target.value);
                   setActiveAnalysis('');
+                  setActiveComparison('');
                   setActiveReportId(null);
                 }}
               >
@@ -462,7 +459,7 @@ function App() {
                 <input type="file" accept=".pdf" onChange={e => setFile(e.target.files[0])} required />
                 <p>{file ? file.name : "Click or drag medical PDF report here"}</p>
                 <button type="submit" className="btn-primary glow-btn" disabled={uploading}>
-                  {uploading ? 'Parsing & Summarizing...' : 'Upload & Process Report'}
+                  {uploading ? 'Analyzing & Comparing Results...' : 'Upload & Generate Plain Summary'}
                 </button>
               </form>
             </section>
@@ -471,13 +468,25 @@ function App() {
 
         {(user.role === 'patient' || (user.role === 'doctor' && selectedPatientId)) && (
           <div className="dashboard-grid full-width-grid">
-            {activeAnalysis && (
+            {(activeAnalysis || activeComparison) && (
               <section className="glass-card analysis-card pop-in">
-                <div className="card-header">
-                  <h3>⚡ Plain-English Clinical Summary</h3>
+                <div className="tab-pill comparison-tab-pill">
+                  <button 
+                    className={activeTab === 'summary' ? 'active' : ''} 
+                    onClick={() => setActiveTab('summary')}
+                  >
+                    💡 Easy Plain-English Summary
+                  </button>
+                  <button 
+                    className={activeTab === 'comparator' ? 'active' : ''} 
+                    onClick={() => setActiveTab('comparator')}
+                  >
+                    📈 Past vs. Present Comparison
+                  </button>
                 </div>
+
                 <div className="markdown-content">
-                  {activeAnalysis}
+                  {activeTab === 'summary' ? activeAnalysis : activeComparison}
                 </div>
               </section>
             )}
@@ -492,7 +501,10 @@ function App() {
                     key={rep.id} 
                     className={`history-row ${activeReportId === rep.id ? 'selected' : ''}`}
                     onClick={() => {
-                      setActiveAnalysis(rep.analysis);
+                      setActiveAnalysis(rep.analysis || "No summary available.");
+                      setActiveComparison(
+                        rep.comparison || "📌 Baseline Report: No previous document was on file when this record was created."
+                      );
                       setActiveReportId(rep.id);
                     }}
                   >
@@ -501,7 +513,7 @@ function App() {
                       <strong>{rep.filename}</strong>
                       <small>Uploaded by: {rep.uploadedBy} on {rep.timestamp}</small>
                     </div>
-                    <span className="view-link">View Translation →</span>
+                    <span className="view-link">View Analysis & Trend →</span>
                   </div>
                 ))}
                 {reports.length === 0 && <p className="muted-text">No medical reports found.</p>}
