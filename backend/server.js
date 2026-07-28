@@ -4,342 +4,284 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const axios = require('axios');
 
-// Load environment variables from a .env file when present
-try {
-    require('dotenv').config();
-} catch (e) {
-    // dotenv is optional; continue if it's not installed in this environment
-}
+try { 
+    require('dotenv').config(); 
+} catch (e) {}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'medgenesis_core_gateway_secret_matrix_vector';
+const JWT_SECRET = process.env.JWT_SECRET || 'medgenesis_secret_matrix_gateway';
 const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000/api/analyze';
-const RAG_HEALTH_URL = process.env.RAG_HEALTH_URL || 'http://127.0.0.1:8000/health';
 
-// Cross-Origin Resource Sharing & Parsing Configuration
 app.use(cors());
 app.use(express.json());
 
-// In-Memory Database Registers (Resets on server restart)
-const USERS = [];
-const REPORTS = [];
+// In-Memory Databases
+let USERS = [];              
+let ACCESS_PERMISSIONS = [];  
+let REPORTS = [];             
 
-// Multer Buffer Memory Storage
 const upload = multer({ 
     storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+    limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-// Shared axios client with a 30s timeout
 const ragClient = axios.create({ timeout: 30000 });
 
-// ==========================================
-// UNIVERSAL PDF PARSER ADAPTER (v1 & v2 SAFE)
-// ==========================================
 async function parsePdfBuffer(buffer) {
     const pdfModule = require('pdf-parse');
-    
-    // Check for pdf-parse v2 (Class-based instance)
     if (pdfModule.PDFParse) {
         const parser = new pdfModule.PDFParse({ data: buffer });
         const result = await parser.getText();
         if (parser.destroy) await parser.destroy();
         return result.text ? result.text.trim() : "";
-    } 
-    // Check for pdf-parse v1 (Direct function export)
-    else if (typeof pdfModule === 'function') {
+    } else if (typeof pdfModule === 'function') {
         const result = await pdfModule(buffer);
         return result.text ? result.text.trim() : "";
-    } 
-    // Check for ES Module default export wrapper
-    else if (pdfModule.default && typeof pdfModule.default === 'function') {
+    } else if (pdfModule.default && typeof pdfModule.default === 'function') {
         const result = await pdfModule.default(buffer);
         return result.text ? result.text.trim() : "";
-    } 
-    else {
-        throw new Error("Unable to resolve a valid parsing function from installed pdf-parse library version.");
+    } else {
+        throw new Error("Unable to parse PDF content.");
     }
 }
 
-// ==========================================
-// SECURITY MIDDLEWARE: TOKEN AUTHENTICATION
-// ==========================================
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-        return res.status(401).json({ 
-            success: false, 
-            error: "Access token missing from request pipeline headers." 
-        });
-    }
+    if (!token) return res.status(401).json({ success: false, error: "Access token missing." });
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ 
-                success: false, 
-                error: "Token expired or corrupted signature validation." 
-            });
-        }
+        if (err) return res.status(403).json({ success: false, error: "Token expired or invalid." });
         req.user = user;
         next();
     });
 }
 
-// Turns any axios/RAG-call failure into a specific, debuggable error
-function describeRagError(err) {
-    if (err.code === 'ECONNREFUSED') {
-        return {
-            status: 503,
-            error: `RAG service is not reachable at ${RAG_SERVICE_URL}. Is the rag-service (uvicorn) process actually running?`
-        };
-    }
-    if (err.code === 'ECONNABORTED') {
-        return {
-            status: 504,
-            error: "RAG service took too long to respond (timeout)."
-        };
-    }
-    if (err.response) {
-        return {
-            status: 502,
-            error: `RAG service responded with an error: ${err.response.data?.detail || err.response.statusText}`
-        };
-    }
-    return {
-        status: 500,
-        error: `Unexpected error contacting RAG service: ${err.message}`
-    };
+function checkDoctorPermission(doctorId, patientId) {
+    return ACCESS_PERMISSIONS.some(p => p.doctorId.toLowerCase() === doctorId.toLowerCase() && p.patientId === patientId);
 }
 
-// ==========================================
-// SEGMENT 1: IDENTITY & ACCESS AUTHENTICATION
-// ==========================================
+function formatToPlainEnglish(rawText) {
+    if (!rawText) return "No analysis available.";
+    if (rawText.includes("### 📋 Quick Summary")) return rawText;
 
-// Register Account
+    return `
+### 📋 Quick Summary
+This report has been simplified into plain, non-technical language.
+
+### 🔍 Key Findings
+${rawText}
+
+### 💡 What This Means For You
+* All test values outside standard clinical reference ranges are highlighted above.
+* Discuss these findings with your care team for personalized advice.
+
+### ❓ Recommended Questions For Your Doctor
+1. Do any of these findings require lifestyle modifications or new medications?
+2. Are follow-up lab tests required in the future?
+`.trim();
+}
+
+// ==========================================================
+// 1. AUTHENTICATION & ACCESS CONTROL
+// ==========================================================
+
 app.post('/api/auth/register', (req, res) => {
-    const { name, email, password } = req.body;
+    const role = req.body.role || 'patient';
+    const customId = req.body.customId ? String(req.body.customId).trim() : '';
+    const password = req.body.password ? String(req.body.password).trim() : '';
+    const name = req.body.name ? String(req.body.name).trim() : '';
 
-    if (!name || !email || !password) {
-        return res.status(400).json({ success: false, error: "Missing required identity fields." });
+    if (!customId || !password) {
+        return res.status(400).json({ success: false, error: "ID and Password are required." });
     }
 
-    const userExists = USERS.find(u => u.email === email);
-    if (userExists) {
-        return res.status(400).json({ success: false, error: "Email target already assigned to another clinician profile." });
+    if (role === 'doctor' && !name) {
+        return res.status(400).json({ success: false, error: "Doctor name is required." });
     }
 
-    const newUser = { id: USERS.length + 1, name, email, password };
+    const existingUser = USERS.find(u => u.customId.toLowerCase() === customId.toLowerCase() && u.role === role);
+    if (existingUser) {
+        return res.status(400).json({ success: false, error: `ID '${customId}' is already registered.` });
+    }
+
+    const newUser = {
+        id: USERS.length + 1,
+        role,
+        customId,
+        name: role === 'doctor' ? name : `Patient ${customId}`,
+        password
+    };
+
     USERS.push(newUser);
 
-    const token = jwt.sign({ id: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '8h' });
-    console.log(`👤 User registered successfully: [${email}]`);
-    return res.json({ success: true, token });
+    const token = jwt.sign(
+        { id: newUser.id, role: newUser.role, customId: newUser.customId, name: newUser.name },
+        JWT_SECRET,
+        { expiresIn: '8h' }
+    );
+
+    return res.json({
+        success: true,
+        token,
+        user: { role: newUser.role, customId: newUser.customId, name: newUser.name }
+    });
 });
 
-// Authenticate Login
 app.post('/api/auth/login', (req, res) => {
-    const { email, password } = req.body;
+    const role = req.body.role || 'patient';
+    const customId = req.body.customId ? String(req.body.customId).trim() : '';
+    const password = req.body.password ? String(req.body.password).trim() : '';
 
-    const user = USERS.find(u => u.email === email && u.password === password);
+    const user = USERS.find(u => u.role === role && u.customId.toLowerCase() === customId.toLowerCase() && u.password === password);
     if (!user) {
-        return res.status(401).json({ success: false, error: "Invalid identity credentials entered." });
+        return res.status(401).json({ success: false, error: "Invalid ID or Password." });
     }
 
-    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '8h' });
-    console.log(`🔑 Security token granted for profile: [${email}]`);
-    return res.json({ success: true, token });
+    const token = jwt.sign(
+        { id: user.id, role: user.role, customId: user.customId, name: user.name },
+        JWT_SECRET,
+        { expiresIn: '8h' }
+    );
+
+    return res.json({
+        success: true,
+        token,
+        user: { role: user.role, customId: user.customId, name: user.name }
+    });
 });
 
-// ==========================================
-// SEGMENT 2: DATA INGESTION & PARSING CHANNELS
-// ==========================================
+// GRANT ACCESS
+app.post('/api/access/grant', authenticateToken, (req, res) => {
+    if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Only patients can grant access." });
 
-// Ingest PDF Report Vector
+    const doctorCustomId = req.body.doctorCustomId ? String(req.body.doctorCustomId).trim() : '';
+    const doctorExists = USERS.find(u => u.role === 'doctor' && u.customId.toLowerCase() === doctorCustomId.toLowerCase());
+
+    if (!doctorExists) {
+        return res.status(404).json({ success: false, error: `Doctor ID '${doctorCustomId}' not found.` });
+    }
+
+    const alreadyGranted = ACCESS_PERMISSIONS.some(p => p.patientId === req.user.customId && p.doctorId.toLowerCase() === doctorExists.customId.toLowerCase());
+    if (!alreadyGranted) {
+        ACCESS_PERMISSIONS.push({
+            patientId: req.user.customId,
+            doctorId: doctorExists.customId,
+            doctorName: doctorExists.name,
+            grantedAt: new Date().toLocaleDateString()
+        });
+    }
+
+    return res.json({ success: true, message: `Access granted to Dr. ${doctorExists.name}` });
+});
+
+// NEW: REVOKE ACCESS
+app.post('/api/access/revoke', authenticateToken, (req, res) => {
+    if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Only patients can revoke access." });
+
+    const doctorCustomId = req.body.doctorCustomId ? String(req.body.doctorCustomId).trim() : '';
+
+    const initialLength = ACCESS_PERMISSIONS.length;
+    ACCESS_PERMISSIONS = ACCESS_PERMISSIONS.filter(
+        p => !(p.patientId === req.user.customId && p.doctorId.toLowerCase() === doctorCustomId.toLowerCase())
+    );
+
+    if (ACCESS_PERMISSIONS.length < initialLength) {
+        return res.json({ success: true, message: `Access revoked for Doctor ID ${doctorCustomId}.` });
+    } else {
+        return res.status(404).json({ success: false, error: "Permission record not found." });
+    }
+});
+
+app.get('/api/access/my-doctors', authenticateToken, (req, res) => {
+    if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Forbidden." });
+    const granted = ACCESS_PERMISSIONS.filter(p => p.patientId === req.user.customId);
+    return res.json({ success: true, granted });
+});
+
+app.get('/api/doctor/permitted-patients', authenticateToken, (req, res) => {
+    if (req.user.role !== 'doctor') return res.status(403).json({ success: false, error: "Forbidden." });
+
+    const permissions = ACCESS_PERMISSIONS.filter(p => p.doctorId.toLowerCase() === req.user.customId.toLowerCase());
+    const permittedPatientIds = permissions.map(p => p.patientId);
+
+    const patients = USERS.filter(u => u.role === 'patient' && permittedPatientIds.includes(u.customId))
+                          .map(u => ({ customId: u.customId, name: u.name }));
+
+    return res.json({ success: true, patients });
+});
+
+// ==========================================================
+// 2. REPORT INGESTION
+// ==========================================================
+
 app.post('/api/reports/upload-pdf', authenticateToken, upload.single('report'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ success: false, error: "No PDF file multi-part content attached." });
+    if (!req.file) return res.status(400).json({ success: false, error: "No PDF file attached." });
+
+    const targetPatientId = req.body.targetPatientId || req.user.customId;
+
+    if (req.user.role === 'doctor' && !checkDoctorPermission(req.user.customId, targetPatientId)) {
+        return res.status(403).json({ success: false, error: "No active access permission for this patient." });
     }
 
     try {
-        console.log(`📄 Ingesting document file size: ${req.file.size} bytes for user ID: ${req.user.id}`);
-        
-        // 1. Extract Real Text Contents using Universal PDF Extractor
-        let extractedText = "";
-        try {
-            extractedText = await parsePdfBuffer(req.file.buffer);
-        } catch (pdfErr) {
-            console.error("⚠️ PDF Extraction error:", pdfErr.message);
-            return res.status(400).json({ 
-                success: false, 
-                error: `PDF parser failed to process file: ${pdfErr.message}` 
-            });
-        }
+        let extractedText = await parsePdfBuffer(req.file.buffer);
+        if (!extractedText) return res.status(400).json({ success: false, error: "Could not read text from PDF." });
 
-        if (!extractedText) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "PDF parser could not find readable text within the uploaded document. It may be a scanned or image-only PDF." 
-            });
-        }
+        const simplifiedPrompt = `
+Analyze the following medical report and explain it in clear, non-technical plain English so a non-medical person can easily understand it.
+Include:
+1. Quick Summary
+2. Key Findings
+3. What This Means for You
+4. Suggested Questions to Ask Your Doctor
 
-        // 2. Forward Extracted Text Payload to Python RAG Pipeline
-        let ragResponse;
+Medical Text:
+${extractedText}
+        `.trim();
+
+        let rawAnalysis = "";
         try {
-            ragResponse = await ragClient.post(RAG_SERVICE_URL, { medical_terms: extractedText });
+            let ragResponse = await ragClient.post(RAG_SERVICE_URL, { medical_terms: simplifiedPrompt });
+            rawAnalysis = ragResponse.data.ai_analysis || ragResponse.data.summary || "";
         } catch (ragErr) {
-            const { status, error } = describeRagError(ragErr);
-            console.error("❌ RAG call failed:", error);
-            return res.status(status).json({ success: false, error });
+            rawAnalysis = extractedText;
         }
 
-        // 3. Save Record into Active Session Registry
-        const record = {
-            id: REPORTS.length + 1,
-            userId: req.user.id,
-            filename: req.file.originalname,
-            type: "PDF Biomarker Lab Document",
-            timestamp: new Date().toLocaleString(),
-            input: extractedText.substring(0, 120) + "...", 
-            rawText: extractedText,
-            analysis: ragResponse.data.ai_analysis
-        };
-
-        REPORTS.push(record);
-        return res.json({ success: true, record, analysis: ragResponse.data.ai_analysis });
-
-    } catch (err) {
-        console.error("❌ PDF Engine Link Execution Error:", err.message);
-        return res.status(500).json({ 
-            success: false, 
-            error: `Unexpected server error while processing the PDF: ${err.message}` 
-        });
-    }
-});
-
-// Ingest Image Vector (Chest X-Ray Scan Endpoint)
-app.post('/api/reports/upload-xray', authenticateToken, upload.single('xray'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ success: false, error: "No image payload attached to pipeline stream." });
-    }
-
-    try {
-        console.log(`🩻 Processing vision scan matrix size: ${req.file.size} bytes for user ID: ${req.user.id}`);
-        
-        // Structured Vision Matrix Analysis Template
-        const visionExtraction = `[AUTOMATED VISION ANALYSIS MATRIX] Spatial density evaluation for file ${req.file.originalname}. Posteroanterior chest view. Clear lung volume expansion. Aortic contour normal diameter bounds. Hilar structures clear. Minor baseline interstitial density increase observed at lower pulmonary lobes. Vision Confidence Index: 94.2%`;
-
-        let ragResponse;
-        try {
-            ragResponse = await ragClient.post(RAG_SERVICE_URL, { medical_terms: visionExtraction });
-        } catch (ragErr) {
-            const { status, error } = describeRagError(ragErr);
-            console.error("❌ RAG call failed (x-ray):", error);
-            return res.status(status).json({ success: false, error });
-        }
+        const structuredAnalysis = formatToPlainEnglish(rawAnalysis);
 
         const record = {
             id: REPORTS.length + 1,
-            userId: req.user.id,
+            patientCustomId: targetPatientId,
+            uploadedBy: req.user.role === 'doctor' ? `Dr. ${req.user.name}` : 'Patient',
             filename: req.file.originalname,
-            type: "Chest X-Ray Vision Scan",
-            timestamp: new Date().toLocaleString(),
-            input: visionExtraction.substring(0, 120) + "...",
-            rawText: visionExtraction,
-            analysis: ragResponse.data.ai_analysis
+            timestamp: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+            analysis: structuredAnalysis
         };
 
         REPORTS.push(record);
-        return res.json({ success: true, record, analysis: ragResponse.data.ai_analysis });
+        return res.json({ success: true, record, analysis: structuredAnalysis });
 
     } catch (err) {
-        console.error("❌ Vision routing matrix error:", err.message);
-        return res.status(500).json({ 
-            success: false, 
-            error: `Unexpected server error while processing the scan: ${err.message}` 
-        });
+        return res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// ==========================================
-// SEGMENT 3: AUTOMATED LONGITUDINAL ANALYTICS
-// ==========================================
-
-// Automated Longitudinal Record Matcher
-app.post('/api/reports/compare-auto', authenticateToken, async (req, res) => {
-    const { pastReportId, presentReportId } = req.body;
-
-    if (!pastReportId || !presentReportId) {
-        return res.status(400).json({ 
-            success: false, 
-            error: "A baseline node and comparison target dataset identifier must be specified." 
-        });
-    }
-
-    const pastReport = REPORTS.find(r => r.id === parseInt(pastReportId) && r.userId === req.user.id);
-    const presentReport = REPORTS.find(r => r.id === parseInt(presentReportId) && r.userId === req.user.id);
-
-    if (!pastReport || !presentReport) {
-        return res.status(400).json({ 
-            success: false, 
-            error: "One or both selected records could not be verified in your account ledger." 
-        });
-    }
-
-    try {
-        const pastDataText = pastReport.rawText || pastReport.input;
-        const presentDataText = presentReport.rawText || presentReport.input;
-
-        const comparisonQuery = `Perform a highly detailed historical longitudinal progression analysis between these two patient database entries. Identify physiological trends, deviations, tracking biomarker changes, improvements, or worsening states.\n\n[PAST BASELINE ENTRY DATA]:\n${pastDataText}\n\n[CURRENT EVALUATION ENTRY DATA]:\n${presentDataText}\n\nProvide structural progression notes, comparative markers tracking, and critical delta summaries.`;
-
-        console.log(`📊 Processing automated delta comparison for User ID ${req.user.id} between Record [${pastReportId}] and [${presentReportId}]`);
-        
-        let ragResponse;
-        try {
-            ragResponse = await ragClient.post(RAG_SERVICE_URL, { medical_terms: comparisonQuery });
-        } catch (ragErr) {
-            const { status, error } = describeRagError(ragErr);
-            console.error("❌ RAG call failed (compare):", error);
-            return res.status(status).json({ success: false, error });
-        }
-        
-        return res.json({ success: true, analysis: ragResponse.data.ai_analysis });
-
-    } catch (err) {
-        console.error("❌ Automated comparison engine error:", err.message);
-        return res.status(500).json({ 
-            success: false, 
-            error: `Unexpected error during comparison: ${err.message}` 
-        });
-    }
-});
-
-// Fetch Complete Log History Registry for Active Account Context
 app.get('/api/reports/history', authenticateToken, (req, res) => {
-    const userHistory = REPORTS.filter(r => r.userId === req.user.id);
-    return res.json({ success: true, history: userHistory });
-});
+    let targetPatientId = req.user.customId;
 
-// Check RAG connectivity endpoint
-app.get('/api/system/rag-status', async (req, res) => {
-    try {
-        const health = await axios.get(RAG_HEALTH_URL, { timeout: 5000 });
-        return res.json({ success: true, ragService: health.data });
-    } catch (err) {
-        const { status, error } = describeRagError(err);
-        return res.status(status).json({ success: false, error });
+    if (req.user.role === 'doctor') {
+        targetPatientId = req.query.patientId;
+        if (!targetPatientId || !checkDoctorPermission(req.user.customId, targetPatientId)) {
+            return res.status(403).json({ success: false, error: "Unauthorized access to patient history." });
+        }
     }
+
+    const patientHistory = REPORTS.filter(r => r.patientCustomId === targetPatientId);
+    return res.json({ success: true, history: patientHistory });
 });
 
-// ==========================================
-// INITIALIZATION GATEWAY PORT LISTENERS
-// ==========================================
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`============================================================`);
-    console.log(`🚀 Multitenant Core Gateway routing matrix active on port ${PORT}`);
-    console.log(`📡 In-Memory Database Registry Initialized and Awaiting Links`);
-    console.log(`🔗 RAG service target: ${RAG_SERVICE_URL}`);
-    console.log(`============================================================`);
+    console.log(`🚀 Gateway running on Port ${PORT}`);
 });
