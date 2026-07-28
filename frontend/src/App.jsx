@@ -8,6 +8,9 @@ function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || '{}'));
   
+  // View Router State ('landing' | 'auth' | 'dashboard')
+  const [currentView, setCurrentView] = useState('landing');
+
   // Auth Form State
   const [isRegister, setIsRegister] = useState(false);
   const [role, setRole] = useState('patient'); 
@@ -33,6 +36,7 @@ function App() {
 
   useEffect(() => {
     if (token) {
+      setCurrentView('dashboard');
       if (user.role === 'patient') {
         fetchGrantedDoctors();
         fetchReports();
@@ -75,6 +79,7 @@ function App() {
         localStorage.setItem('user', JSON.stringify(res.data.user));
         setToken(res.data.token);
         setUser(res.data.user);
+        setCurrentView('dashboard');
       }
     } catch (err) {
       setAuthError(err.response?.data?.error || "Authentication failed.");
@@ -88,6 +93,7 @@ function App() {
     setReports([]);
     setSelectedPatientId('');
     setActiveAnalysis('');
+    setCurrentView('landing');
   };
 
   const fetchGrantedDoctors = async () => {
@@ -114,7 +120,7 @@ function App() {
   };
 
   const handleRevokeAccess = async (docId) => {
-    if (!window.confirm(`Are you sure you want to revoke access for Doctor ID: ${docId}?`)) return;
+    if (!window.confirm(`Revoke access for Doctor ID: ${docId}?`)) return;
     try {
       const res = await axios.post(`${API_BASE}/access/revoke`, 
         { doctorCustomId: docId },
@@ -185,13 +191,86 @@ function App() {
     }
   };
 
-  if (!token) {
+  // ==========================================================
+  // VIEW 1: LANDING PAGE (Public Entry Point)
+  // ==========================================================
+  if (currentView === 'landing' && !token) {
     return (
-      <div className="auth-wrapper">
+      <div className="landing-container fade-in">
+        {/* TOP NAVIGATION BAR */}
+        <nav className="landing-navbar">
+          <div className="brand">
+            <span className="logo-icon">🧬</span>
+            <h2>MedGenesis</h2>
+          </div>
+          <div className="nav-actions">
+            <button className="nav-btn" onClick={() => { setRole('patient'); setCurrentView('auth'); }}>Patient Portal</button>
+            <button className="nav-btn" onClick={() => { setRole('doctor'); setCurrentView('auth'); }}>Doctor Portal</button>
+            <button className="nav-btn-primary glow-btn" onClick={() => setCurrentView('auth')}>Sign In</button>
+          </div>
+        </nav>
+
+        {/* HERO SECTION */}
+        <header className="hero-section">
+          <div className="hero-badge">✨ Next-Gen Healthcare Intelligence</div>
+          <h1>Transforming Medical Reports into Plain-English Insights</h1>
+          <p>
+            MedGenesis is an AI-powered clinical intelligence network. Upload complex lab results, manage 
+            doctor permissions securely, and understand health data instantly.
+          </p>
+          <div className="hero-cta">
+            <button className="btn-hero-primary glow-btn" onClick={() => setCurrentView('auth')}>
+              Get Started Now →
+            </button>
+            <button className="btn-hero-secondary" onClick={() => { setRole('doctor'); setCurrentView('auth'); }}>
+              Doctor Access
+            </button>
+          </div>
+        </header>
+
+        {/* FEATURES GRID */}
+        <section className="features-section">
+          <h2>Engineered for Patients and Healthcare Providers</h2>
+          <div className="features-grid">
+            <div className="feature-card">
+              <div className="feature-icon">🤖</div>
+              <h3>Plain-English RAG Parsing</h3>
+              <p>Translates complex clinical terminology, lab reference ranges, and diagnostic metrics into easily understandable insights.</p>
+            </div>
+
+            <div className="feature-card">
+              <div className="feature-icon">🔒</div>
+              <h3>Granular Granter Matrix</h3>
+              <p>Patients hold absolute control over their record access with instant doctor-granting and 1-click revocation options.</p>
+            </div>
+
+            <div className="feature-card">
+              <div className="feature-icon">⚡</div>
+              <h3>Specialist Collaboration</h3>
+              <p>Physicians can directly ingest documents and view centralized medical histories for permitted patient profiles.</p>
+            </div>
+          </div>
+        </section>
+
+        {/* FOOTER */}
+        <footer className="landing-footer">
+          <p>© MedGenesis Clinical Network. HIPAA-Compliant Architecture & AI Intelligence Engine.</p>
+        </footer>
+      </div>
+    );
+  }
+
+  // ==========================================================
+  // VIEW 2: AUTHENTICATION SCREEN
+  // ==========================================================
+  if (currentView === 'auth' && !token) {
+    return (
+      <div className="auth-wrapper fade-in">
         <div className="auth-hero">
-          <div className="hero-badge">🧬 MedGenesis Health AI Platform</div>
-          <h1>Intelligent Clinical Insights & Data Network</h1>
-          <p>Seamless, HIPAA-compliant document parsing, specialist permissions, and plain-language medical report translation.</p>
+          <button className="back-link" onClick={() => setCurrentView('landing')}>← Back to Main Website</button>
+          <div className="hero-badge">🔐 MedGenesis Portal Access</div>
+          <h1>Secure Account Authentication</h1>
+          <p>Sign in to access real-time clinical reports, patient permissions, and document ingestion tools.</p>
         </div>
 
         <div className="auth-card-container slide-up">
@@ -201,7 +280,7 @@ function App() {
           </div>
 
           <form onSubmit={handleAuth} className="modern-form">
-            <h2>{isRegister ? 'Create Account' : 'Portal Sign In'}</h2>
+            <h2>{isRegister ? 'Create Credentials' : 'Portal Sign In'}</h2>
             <span className="sub-title">Role: <strong>{role.toUpperCase()}</strong></span>
             
             {authError && <div className="error-badge pop-in">{authError}</div>}
@@ -254,9 +333,11 @@ function App() {
     );
   }
 
+  // ==========================================================
+  // VIEW 3: AUTHENTICATED DASHBOARD
+  // ==========================================================
   return (
-    <div className="app-layout">
-      {/* SIDEBAR NAVIGATION */}
+    <div className="app-layout fade-in">
       <aside className="sidebar">
         <div className="brand">
           <div className="logo-icon">🩺</div>
@@ -273,7 +354,6 @@ function App() {
 
         <nav className="nav-menu">
           <div className="nav-item active">📊 Overview & Reports</div>
-          <div className="nav-item">🔒 Security & Permissions</div>
         </nav>
 
         <button onClick={logout} className="logout-btn">
@@ -281,7 +361,6 @@ function App() {
         </button>
       </aside>
 
-      {/* MAIN CONTENT AREA */}
       <main className="main-content">
         <header className="top-header">
           <div>
@@ -290,8 +369,7 @@ function App() {
           </div>
         </header>
 
-        {/* METRICS ROW */}
-        <section className="metrics-grid fade-in">
+        <section className="metrics-grid">
           <div className="metric-card">
             <span className="metric-title">Available Documents</span>
             <span className="metric-value">{reports.length}</span>
@@ -314,7 +392,6 @@ function App() {
         </section>
 
         <div className="dashboard-grid">
-          {/* PATIENT PERMISSION MANAGEMENT */}
           {user.role === 'patient' && (
             <section className="glass-card slide-up">
               <div className="card-header">
@@ -341,8 +418,7 @@ function App() {
                     </div>
                     <button 
                       onClick={() => handleRevokeAccess(doc.doctorId)} 
-                      className="btn-revoke" 
-                      title="Stop access for this doctor"
+                      className="btn-revoke"
                     >
                       Revoke
                     </button>
@@ -353,7 +429,6 @@ function App() {
             </section>
           )}
 
-          {/* DOCTOR PATIENT SELECTOR */}
           {user.role === 'doctor' && (
             <section className="glass-card slide-up">
               <div className="card-header">
@@ -377,7 +452,6 @@ function App() {
             </section>
           )}
 
-          {/* DOCUMENT UPLOAD SECTION */}
           {(user.role === 'patient' || (user.role === 'doctor' && selectedPatientId)) && (
             <section className="glass-card slide-up">
               <div className="card-header">
@@ -395,10 +469,8 @@ function App() {
           )}
         </div>
 
-        {/* ANALYSIS & HISTORY SECTION */}
         {(user.role === 'patient' || (user.role === 'doctor' && selectedPatientId)) && (
           <div className="dashboard-grid full-width-grid">
-            {/* AI SUMMARY CARD */}
             {activeAnalysis && (
               <section className="glass-card analysis-card pop-in">
                 <div className="card-header">
@@ -410,7 +482,6 @@ function App() {
               </section>
             )}
 
-            {/* DOCUMENT HISTORY TABLE */}
             <section className="glass-card slide-up">
               <div className="card-header">
                 <h3>📜 Document History Log</h3>
