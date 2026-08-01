@@ -4,6 +4,54 @@ import './App.css';
 
 const API_BASE = "http://localhost:5000/api";
 
+// Utility function to clean bad unicode characters and zero-width spaces
+const sanitizeText = (text) => {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/[\u200B-\u200D\uFEFF]/g, '') // Remove zero-width spaces
+    .replace(/\r\n/g, '\n')                 // Normalize line breaks
+    .replace(/[^\x00-\x7F\u00A0-\u024F\u1E00-\u1EFF\u2600-\u26FF\u2700-\u27BF]/g, ''); // Filter out broken glyphs
+};
+
+// Safe, native renderer for plain text & simple markdown formatting
+const FormattedText = ({ content }) => {
+  const cleanContent = sanitizeText(content);
+
+  if (!cleanContent) return <p className="muted-text">No content available to display.</p>;
+
+  // Split content by lines to format headings, bullet points, and paragraphs cleanly
+  const lines = cleanContent.split('\n');
+
+  return (
+    <div className="formatted-text-block">
+      {lines.map((line, idx) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={idx} style={{ height: '8px' }} />;
+
+        // Header lines (starts with # or ALL CAPS)
+        if (trimmed.startsWith('#')) {
+          const headerText = trimmed.replace(/^#+\s*/, '');
+          return <h4 key={idx} style={{ color: '#818cf8', marginTop: '14px', marginBottom: '6px' }}>{headerText}</h4>;
+        }
+
+        // Bullet list lines (starts with *, -, or •)
+        if (trimmed.startsWith('-') || trimmed.startsWith('*') || trimmed.startsWith('•')) {
+          const bulletText = trimmed.replace(/^[-*•]\s*/, '');
+          return (
+            <div key={idx} style={{ display: 'flex', gap: '8px', marginLeft: '12px', marginY: '4px' }}>
+              <span style={{ color: '#a5b4fc' }}>•</span>
+              <span>{bulletText}</span>
+            </div>
+          );
+        }
+
+        // Standard text line
+        return <p key={idx} style={{ margin: '4px 0', lineHeight: '1.6' }}>{trimmed}</p>;
+      })}
+    </div>
+  );
+};
+
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || '{}'));
@@ -96,6 +144,8 @@ function App() {
     setSelectedPatientId('');
     setActiveAnalysis('');
     setActiveComparison('');
+    setActiveReportId(null);
+    setFile(null);
     setCurrentView('landing');
   };
 
@@ -162,9 +212,10 @@ function App() {
     }
   };
 
-  const handleFileUpload = async (e) => {
-    e.preventDefault();
-    if (!file) return alert("Select a PDF document.");
+  const handleFileUpload = async () => {
+    if (!file) {
+      return alert("Please select a Medical PDF file first!");
+    }
 
     setUploading(true);
     const formData = new FormData();
@@ -179,19 +230,27 @@ function App() {
     }
 
     try {
+      console.log("🚀 Uploading file:", file.name);
       const res = await axios.post(`${API_BASE}/reports/upload-pdf`, formData, {
         headers: { 
           Authorization: `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
         }
       });
-      setActiveAnalysis(res.data.analysis);
-      setActiveComparison(res.data.comparison);
-      setActiveReportId(res.data.record?.id);
-      setFile(null);
-      fetchReports();
+
+      if (res.data.success) {
+        setActiveAnalysis(res.data.analysis || '');
+        setActiveComparison(res.data.comparison || '');
+        setActiveReportId(res.data.record?.id);
+        setActiveTab('summary');
+        setFile(null);
+        fetchReports();
+      } else {
+        alert(res.data.error || "Upload failed.");
+      }
     } catch (err) {
-      alert(err.response?.data?.error || "Upload failed.");
+      console.error("Upload error details:", err);
+      alert(err.response?.data?.error || "Upload failed. Please check backend server connection.");
     } finally {
       setUploading(false);
     }
@@ -343,8 +402,12 @@ function App() {
         <div className="user-profile-badge">
           <div className="avatar">{user.role === 'doctor' ? 'Dr' : 'Pt'}</div>
           <div className="profile-info">
-            <span className="profile-name">{user.role === 'doctor' ? (user.name.startsWith('Dr.') ? user.name : `Dr. ${user.name}`) : `Patient #${user.customId}`}</span>
-            <span className="profile-role">{user.role.toUpperCase()}</span>
+            <span className="profile-name">
+              {user.role === 'doctor' 
+                ? (user.name && user.name.startsWith('Dr.') ? user.name : `Dr. ${user.name || ''}`) 
+                : `Patient #${user.customId}`}
+            </span>
+            <span className="profile-role">{user.role?.toUpperCase()}</span>
           </div>
         </div>
 
@@ -409,10 +472,11 @@ function App() {
                 {grantedDoctors.map((doc, idx) => (
                   <div key={idx} className="permission-chip pop-in">
                     <div className="doc-info">
-                      <strong>{doc.doctorName.startsWith('Dr.') ? doc.doctorName : `Dr. ${doc.doctorName}`}</strong>
+                      <strong>{doc.doctorName && doc.doctorName.startsWith('Dr.') ? doc.doctorName : `Dr. ${doc.doctorName}`}</strong>
                       <small>ID: {doc.doctorId} • Granted: {doc.grantedAt}</small>
                     </div>
                     <button 
+                      type="button"
                       onClick={() => handleRevokeAccess(doc.doctorId)} 
                       className="btn-revoke"
                     >
@@ -454,14 +518,69 @@ function App() {
               <div className="card-header">
                 <h3>📤 Ingest New Medical PDF</h3>
               </div>
-              <form onSubmit={handleFileUpload} className="file-drop-zone">
-                <div className="drop-icon">📄</div>
-                <input type="file" accept=".pdf" onChange={e => setFile(e.target.files[0])} required />
-                <p>{file ? file.name : "Click or drag medical PDF report here"}</p>
-                <button type="submit" className="btn-primary glow-btn" disabled={uploading}>
-                  {uploading ? 'Analyzing & Comparing Results...' : 'Upload & Generate Plain Summary'}
-                </button>
-              </form>
+
+              {/* Dedicated File Picker Box */}
+              <div 
+                style={{
+                  border: '2px dashed rgba(99, 102, 241, 0.4)',
+                  borderRadius: '12px',
+                  padding: '20px',
+                  textAlign: 'center',
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  marginBottom: '15px'
+                }}
+              >
+                <div style={{ fontSize: '2rem', marginBottom: '8px' }}>📄</div>
+                
+                <input 
+                  id="pdf-file-picker"
+                  type="file" 
+                  accept="application/pdf" 
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      setFile(e.target.files[0]);
+                    }
+                  }} 
+                  style={{ display: 'none' }}
+                />
+
+                <label 
+                  htmlFor="pdf-file-picker" 
+                  style={{
+                    display: 'inline-block',
+                    padding: '10px 20px',
+                    background: '#312e81',
+                    color: '#e0e7ff',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    marginBottom: '10px'
+                  }}
+                >
+                  Choose Medical PDF...
+                </label>
+
+                <p style={{ margin: '5px 0 0 0', color: file ? '#4ade80' : '#94a3b8', fontSize: '0.95rem' }}>
+                  {file ? `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)` : "No file selected yet"}
+                </p>
+              </div>
+
+              {/* Direct Upload Button */}
+              <button 
+                type="button" 
+                onClick={handleFileUpload}
+                disabled={uploading}
+                className="btn-primary glow-btn"
+                style={{
+                  width: '100%',
+                  padding: '14px',
+                  fontSize: '1rem',
+                  cursor: uploading ? 'not-allowed' : 'pointer',
+                  opacity: uploading ? 0.6 : 1
+                }}
+              >
+                {uploading ? 'Analyzing & Comparing Results...' : 'Upload & Generate Plain Summary'}
+              </button>
             </section>
           )}
         </div>
@@ -472,12 +591,14 @@ function App() {
               <section className="glass-card analysis-card pop-in">
                 <div className="tab-pill comparison-tab-pill">
                   <button 
+                    type="button"
                     className={activeTab === 'summary' ? 'active' : ''} 
                     onClick={() => setActiveTab('summary')}
                   >
                     💡 Easy Plain-English Summary
                   </button>
                   <button 
+                    type="button"
                     className={activeTab === 'comparator' ? 'active' : ''} 
                     onClick={() => setActiveTab('comparator')}
                   >
@@ -485,8 +606,11 @@ function App() {
                   </button>
                 </div>
 
-                <div className="markdown-content">
-                  {activeTab === 'summary' ? activeAnalysis : activeComparison}
+                {/* Safe Native Formatting Box */}
+                <div className="markdown-content" style={{ marginTop: '15px' }}>
+                  <FormattedText 
+                    content={activeTab === 'summary' ? activeAnalysis : activeComparison} 
+                  />
                 </div>
               </section>
             )}
@@ -507,6 +631,7 @@ function App() {
                       );
                       setActiveReportId(rep.id);
                     }}
+                    style={{ cursor: 'pointer' }}
                   >
                     <div className="doc-icon">📑</div>
                     <div className="doc-details">

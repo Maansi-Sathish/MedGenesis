@@ -1,339 +1,361 @@
-const express = require('express');
-const cors = require('cors');
-const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const axios = require('axios');
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import multer from 'multer';
+import axios from 'axios';
+import jwt from 'jsonwebtoken';
+import pg from 'pg';
+import FormData from 'form-data';
 
-try { 
-    require('dotenv').config(); 
-} catch (e) {}
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'medgenesis_secret_matrix_gateway';
-const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000/api/analyze';
-
 app.use(cors());
 app.use(express.json());
 
-// In-Memory Databases
-let USERS = [];              
-let ACCESS_PERMISSIONS = [];  
-let REPORTS = [];             
+const JWT_SECRET = process.env.JWT_SECRET || 'medgenesis_secret_key_2026';
+const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000/api/analyze';
 
-const upload = multer({ 
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 }
+// ==========================================
+// 1. POSTGRESQL DATABASE CONNECTION
+// ==========================================
+const { Pool } = pg;
+const pool = new Pool({
+  user: process.env.PGUSER || 'postgres',
+  host: process.env.PGHOST || 'localhost',
+  database: process.env.PGDATABASE || 'medgenesis',
+  password: process.env.PGPASSWORD || '123456',
+  port: parseInt(process.env.PGPORT || '5432', 10),
 });
 
-const ragClient = axios.create({ timeout: 30000 });
-
-async function parsePdfBuffer(buffer) {
-    const pdfModule = require('pdf-parse');
-    if (pdfModule.PDFParse) {
-        const parser = new pdfModule.PDFParse({ data: buffer });
-        const result = await parser.getText();
-        if (parser.destroy) await parser.destroy();
-        return result.text ? result.text.trim() : "";
-    } else if (typeof pdfModule === 'function') {
-        const result = await pdfModule(buffer);
-        return result.text ? result.text.trim() : "";
-    } else if (pdfModule.default && typeof pdfModule.default === 'function') {
-        const result = await pdfModule.default(buffer);
-        return result.text ? result.text.trim() : "";
-    } else {
-        throw new Error("Unable to parse PDF content.");
-    }
+// Verify & Patch Schema
+async function initDb() {
+  try {
+    // Ensure raw_text column exists in case manual SQL was skipped
+    await pool.query(`ALTER TABLE reports ADD COLUMN IF NOT EXISTS raw_text TEXT;`);
+    console.log('✅ PostgreSQL DB connected & schema verified against pgAdmin setup.');
+  } catch (err) {
+    console.error('❌ Database Sync Warning:', err.message);
+  }
 }
 
-function authenticateToken(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ success: false, error: "Access token missing." });
+// Multer RAM Storage setup
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }
+});
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.status(403).json({ success: false, error: "Token expired or invalid." });
-        req.user = user;
-        next();
-    });
-}
+// ==========================================
+// 2. JWT AUTHENTICATION MIDDLEWARE
+// ==========================================
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
-function checkDoctorPermission(doctorId, patientId) {
-    return ACCESS_PERMISSIONS.some(p => 
-        String(p.doctorId).toLowerCase() === String(doctorId).toLowerCase() && 
-        String(p.patientId).toLowerCase() === String(patientId).toLowerCase()
+  if (!token) return res.status(401).json({ error: 'Access token required.' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid or expired session token.' });
+    req.user = user;
+    next();
+  });
+};
+
+// ==========================================
+// 3. AUTHENTICATION ROUTES
+// ==========================================
+app.post('/api/auth/register', async (req, res) => {
+  const { customId, password, name, role } = req.body;
+
+  if (!customId || !password || !role) {
+    return res.status(400).json({ error: 'Custom ID, password, and role are required.' });
+  }
+
+  try {
+    const existing = await pool.query(
+      'SELECT * FROM users WHERE custom_id = $1 AND role = $2',
+      [String(customId).trim(), role]
     );
-}
 
-// ULTRA-SIMPLIFIED PLAIN ENGLISH FORMATTER
-function formatToUltraPlainEnglish(rawText) {
-    if (!rawText) return "No analysis available.";
-    if (rawText.includes("🟢 GOOD NEWS")) return rawText;
-
-    return `
-🟢 GOOD NEWS (LOOKS NORMAL)
-• Baseline markers in this report fall within safe ranges.
-• Think of your results like a standard check-up—key indicators are functioning normally!
-
-⚠️ THINGS TO WATCH OUT FOR (NEEDS ATTENTION)
-• Key health notes from analysis:
-${rawText}
-
-🚀 WHAT YOU SHOULD DO NEXT
-1. Don't panic—an abnormal reading often just points to temporary factors like dehydration or diet.
-2. Hydrate well and rest before any re-tests.
-3. Consult your healthcare provider to discuss any minor lifestyle adjustments.
-
-❓ QUESTIONS FOR YOUR DOCTOR
-• "Are any of these readings urgent, or should we monitor them?"
-• "Do you recommend any changes to my diet or daily routine?"
-`.trim();
-}
-
-// COMPARATOR GENERATOR
-function generateComparisonAnalysis(currentText, previousReports) {
-    if (!previousReports || previousReports.length === 0) {
-        return `
-📌 BASELINE REPORT ESTABLISHED
-
-• This is your first uploaded medical record on file (${new Date().toLocaleDateString()}).
-• Future uploads will automatically perform a side-by-side comparative analysis against this report to track your health trends over time!
-`.trim();
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Account with this ID and role already exists.' });
     }
 
-    const lastReport = previousReports[previousReports.length - 1];
+    const displayName = name || (role === 'doctor' ? `Dr. ${customId}` : `Patient ${customId}`);
 
-    return `
-📈 HEALTH TREND COMPARISON 
-(Comparing latest upload vs. previous report from ${lastReport.timestamp})
+    const newUser = await pool.query(
+      'INSERT INTO users (custom_id, name, password, role) VALUES ($1, $2, $3, $4) RETURNING *',
+      [String(customId).trim(), displayName, String(password).trim(), role]
+    );
 
-🔄 WHAT CHANGED OVER TIME:
-• Previous Report: ${lastReport.filename} (${lastReport.timestamp})
-• Current Report: Latest Upload
-
-🔍 KEY COMPARISON INSIGHTS:
-• Both test records have been indexed under your profile.
-• Compare trends side-by-side with your doctor to observe long-term progress!
-`.trim();
-}
-
-// ==========================================================
-// 1. AUTHENTICATION & ACCESS CONTROL
-// ==========================================================
-
-app.post('/api/auth/register', (req, res) => {
-    const role = req.body.role || 'patient';
-    const customId = req.body.customId ? String(req.body.customId).trim() : '';
-    const password = req.body.password ? String(req.body.password).trim() : '';
-    const name = req.body.name ? String(req.body.name).trim() : '';
-
-    if (!customId || !password) {
-        return res.status(400).json({ success: false, error: "ID and Password are required." });
-    }
-
-    if (role === 'doctor' && !name) {
-        return res.status(400).json({ success: false, error: "Doctor name is required." });
-    }
-
-    const existingUser = USERS.find(u => String(u.customId).toLowerCase() === customId.toLowerCase() && u.role === role);
-    if (existingUser) {
-        return res.status(400).json({ success: false, error: `ID '${customId}' is already registered.` });
-    }
-
-    const newUser = {
-        id: USERS.length + 1,
-        role,
-        customId,
-        name: role === 'doctor' ? name : `Patient ${customId}`,
-        password
-    };
-
-    USERS.push(newUser);
-
+    const user = newUser.rows[0];
     const token = jwt.sign(
-        { id: newUser.id, role: newUser.role, customId: newUser.customId, name: newUser.name },
-        JWT_SECRET,
-        { expiresIn: '8h' }
+      { id: user.id, customId: user.custom_id, role: user.role, name: user.name },
+      JWT_SECRET,
+      { expiresIn: '7d' }
     );
 
     return res.json({
-        success: true,
-        token,
-        user: { role: newUser.role, customId: newUser.customId, name: newUser.name }
+      success: true,
+      token,
+      user: { id: user.id, customId: user.custom_id, name: user.name, role: user.role }
     });
+  } catch (err) {
+    console.error('Registration Error:', err);
+    return res.status(500).json({ error: 'Internal server error during registration.' });
+  }
 });
 
-app.post('/api/auth/login', (req, res) => {
-    const role = req.body.role || 'patient';
-    const customId = req.body.customId ? String(req.body.customId).trim() : '';
-    const password = req.body.password ? String(req.body.password).trim() : '';
+app.post('/api/auth/login', async (req, res) => {
+  const { customId, password, role } = req.body;
 
-    const user = USERS.find(u => u.role === role && String(u.customId).toLowerCase() === customId.toLowerCase() && u.password === password);
-    if (!user) {
-        return res.status(401).json({ success: false, error: "Invalid ID or Password." });
+  try {
+    const result = await pool.query(
+      'SELECT * FROM users WHERE custom_id = $1 AND role = $2',
+      [String(customId).trim(), role]
+    );
+
+    const user = result.rows[0];
+    if (!user || user.password !== String(password).trim()) {
+      return res.status(401).json({ error: 'Invalid ID, password, or role.' });
     }
 
     const token = jwt.sign(
-        { id: user.id, role: user.role, customId: user.customId, name: user.name },
-        JWT_SECRET,
-        { expiresIn: '8h' }
+      { id: user.id, customId: user.custom_id, role: user.role, name: user.name },
+      JWT_SECRET,
+      { expiresIn: '7d' }
     );
 
     return res.json({
-        success: true,
-        token,
-        user: { role: user.role, customId: user.customId, name: user.name }
+      success: true,
+      token,
+      user: { id: user.id, customId: user.custom_id, name: user.name, role: user.role }
     });
+  } catch (err) {
+    console.error('Login Error:', err);
+    return res.status(500).json({ error: 'Internal server error during login.' });
+  }
 });
 
-app.post('/api/access/grant', authenticateToken, (req, res) => {
-    if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Only patients can grant access." });
+// ==========================================
+// 4. ACCESS CONTROL (MATCHED TO access_permissions)
+// ==========================================
+app.post('/api/access/grant', authenticateToken, async (req, res) => {
+  const { doctorCustomId } = req.body;
+  const patientId = req.user.customId;
 
-    const doctorCustomId = req.body.doctorCustomId ? String(req.body.doctorCustomId).trim() : '';
-    const doctorExists = USERS.find(u => u.role === 'doctor' && String(u.customId).toLowerCase() === doctorCustomId.toLowerCase());
+  if (req.user.role !== 'patient') {
+    return res.status(403).json({ error: 'Only patients can grant access.' });
+  }
 
-    if (!doctorExists) {
-        return res.status(404).json({ success: false, error: `Doctor ID '${doctorCustomId}' not found.` });
-    }
-
-    const alreadyGranted = ACCESS_PERMISSIONS.some(p => 
-        String(p.patientId).toLowerCase() === String(req.user.customId).toLowerCase() && 
-        String(p.doctorId).toLowerCase() === String(doctorExists.customId).toLowerCase()
+  try {
+    const docCheck = await pool.query(
+      'SELECT name FROM users WHERE custom_id = $1 AND role = $2',
+      [String(doctorCustomId).trim(), 'doctor']
     );
 
-    if (!alreadyGranted) {
-        ACCESS_PERMISSIONS.push({
-            patientId: req.user.customId,
-            doctorId: doctorExists.customId,
-            doctorName: doctorExists.name,
-            grantedAt: new Date().toLocaleDateString()
-        });
+    if (docCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Doctor ID not found in system.' });
     }
 
-    return res.json({ success: true, message: `Access granted to Dr. ${doctorExists.name}` });
+    const doctorName = docCheck.rows[0].name;
+
+    await pool.query(
+      `INSERT INTO access_permissions (patient_id, doctor_id, doctor_name) 
+       VALUES ($1, $2, $3) 
+       ON CONFLICT (patient_id, doctor_id) DO NOTHING`,
+      [patientId, String(doctorCustomId).trim(), doctorName]
+    );
+
+    return res.json({ success: true, message: `Access granted to ${doctorName}` });
+  } catch (err) {
+    console.error('Grant Access Error:', err);
+    return res.status(500).json({ error: 'Failed to grant access.' });
+  }
 });
 
-// FIXED REVOKE ENDPOINT WITH STRICT STRING MATCHER
-app.post('/api/access/revoke', authenticateToken, (req, res) => {
-    if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Only patients can revoke access." });
+app.post('/api/access/revoke', authenticateToken, async (req, res) => {
+  const { doctorCustomId } = req.body;
+  const patientId = req.user.customId;
 
-    const targetDoctorId = req.body.doctorCustomId ? String(req.body.doctorCustomId).trim().toLowerCase() : '';
+  try {
+    await pool.query(
+      'DELETE FROM access_permissions WHERE patient_id = $1 AND doctor_id = $2',
+      [patientId, String(doctorCustomId).trim()]
+    );
+    return res.json({ success: true, message: 'Access revoked successfully.' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to revoke access.' });
+  }
+});
 
-    if (!targetDoctorId) {
-        return res.status(400).json({ success: false, error: "Doctor ID is required." });
+app.get('/api/access/my-doctors', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT doctor_id as "doctorId", doctor_name as "doctorName", granted_at as "grantedAt"
+       FROM access_permissions 
+       WHERE patient_id = $1`,
+      [req.user.customId]
+    );
+    return res.json({ granted: result.rows });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to retrieve granted doctors.' });
+  }
+});
+
+app.get('/api/doctor/permitted-patients', authenticateToken, async (req, res) => {
+  if (req.user.role !== 'doctor') {
+    return res.status(403).json({ error: 'Doctor access required.' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT ap.patient_id as "customId", COALESCE(u.name, ap.patient_id) as "name"
+       FROM access_permissions ap
+       LEFT JOIN users u ON ap.patient_id = u.custom_id AND u.role = 'patient'
+       WHERE ap.doctor_id = $1`,
+      [req.user.customId]
+    );
+    return res.json({ patients: result.rows });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to retrieve permitted patients.' });
+  }
+});
+
+// ==========================================
+// 5. REPORT MANAGEMENT & RAG INTEGRATION
+// ==========================================
+app.get('/api/reports/history', authenticateToken, async (req, res) => {
+  let targetPatientId = req.user.customId;
+
+  if (req.user.role === 'doctor') {
+    targetPatientId = req.query.patientId;
+    if (!targetPatientId) {
+      return res.status(400).json({ error: 'Patient ID is required.' });
     }
 
-    const initialLength = ACCESS_PERMISSIONS.length;
-    
-    ACCESS_PERMISSIONS = ACCESS_PERMISSIONS.filter(p => {
-        const isMatch = String(p.patientId).toLowerCase() === String(req.user.customId).toLowerCase() && 
-                        String(p.doctorId).toLowerCase() === targetDoctorId;
-        return !isMatch;
-    });
+    const grantCheck = await pool.query(
+      'SELECT * FROM access_permissions WHERE patient_id = $1 AND doctor_id = $2',
+      [String(targetPatientId), req.user.customId]
+    );
 
-    if (ACCESS_PERMISSIONS.length < initialLength) {
-        return res.json({ success: true, message: `Access revoked successfully.` });
-    } else {
-        return res.status(404).json({ success: false, error: "Permission record not found or already revoked." });
+    if (grantCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You do not have access to this patient.' });
     }
+  }
+
+  try {
+    const history = await pool.query(
+      `SELECT id, patient_custom_id as "patientId", filename, analysis, comparison, 
+              uploaded_by as "uploadedBy", timestamp
+       FROM reports WHERE patient_custom_id = $1 ORDER BY id DESC`,
+      [String(targetPatientId)]
+    );
+    return res.json({ history: history.rows });
+  } catch (err) {
+    return res.json({ history: [] });
+  }
 });
-
-app.get('/api/access/my-doctors', authenticateToken, (req, res) => {
-    if (req.user.role !== 'patient') return res.status(403).json({ success: false, error: "Forbidden." });
-    const granted = ACCESS_PERMISSIONS.filter(p => String(p.patientId).toLowerCase() === String(req.user.customId).toLowerCase());
-    return res.json({ success: true, granted });
-});
-
-app.get('/api/doctor/permitted-patients', authenticateToken, (req, res) => {
-    if (req.user.role !== 'doctor') return res.status(403).json({ success: false, error: "Forbidden." });
-
-    const permissions = ACCESS_PERMISSIONS.filter(p => String(p.doctorId).toLowerCase() === String(req.user.customId).toLowerCase());
-    const permittedPatientIds = permissions.map(p => String(p.patientId).toLowerCase());
-
-    const patients = USERS.filter(u => u.role === 'patient' && permittedPatientIds.includes(String(u.customId).toLowerCase()))
-                          .map(u => ({ customId: u.customId, name: u.name }));
-
-    return res.json({ success: true, patients });
-});
-
-// ==========================================================
-// 2. REPORT INGESTION & COMPARATOR PIPELINE
-// ==========================================================
 
 app.post('/api/reports/upload-pdf', authenticateToken, upload.single('report'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ success: false, error: "No PDF file attached." });
-
-    const targetPatientId = req.body.targetPatientId || req.user.customId;
-
-    if (req.user.role === 'doctor' && !checkDoctorPermission(req.user.customId, targetPatientId)) {
-        return res.status(403).json({ success: false, error: "No permission for this patient." });
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Please choose a PDF file to upload.' });
     }
 
-    try {
-        let extractedText = await parsePdfBuffer(req.file.buffer);
-        if (!extractedText) return res.status(400).json({ success: false, error: "Could not read text from PDF." });
-
-        const previousPatientReports = REPORTS.filter(r => String(r.patientCustomId).toLowerCase() === String(targetPatientId).toLowerCase());
-
-        const ultraPlainPrompt = `
-Analyze the following medical report for an everyday person. Use zero medical jargon, simple analogies, and clear bullet points.
-Explain:
-1. What is completely normal and good news.
-2. What is slightly out of range or needs attention.
-3. What practical next steps the patient should take.
-
-Medical Text:
-${extractedText}
-        `.trim();
-
-        let rawAnalysis = "";
-        try {
-            let ragResponse = await ragClient.post(RAG_SERVICE_URL, { medical_terms: ultraPlainPrompt });
-            rawAnalysis = ragResponse.data.ai_analysis || ragResponse.data.summary || "";
-        } catch (ragErr) {
-            rawAnalysis = extractedText;
-        }
-
-        const structuredAnalysis = formatToUltraPlainEnglish(rawAnalysis);
-        const comparisonAnalysis = generateComparisonAnalysis(extractedText, previousPatientReports);
-
-        const record = {
-            id: REPORTS.length + 1,
-            patientCustomId: targetPatientId,
-            uploadedBy: req.user.role === 'doctor' ? req.user.name : 'Patient',
-            filename: req.file.originalname,
-            timestamp: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
-            analysis: structuredAnalysis,
-            comparison: comparisonAnalysis
-        };
-
-        REPORTS.push(record);
-        return res.json({ 
-            success: true, 
-            record, 
-            analysis: structuredAnalysis,
-            comparison: comparisonAnalysis 
-        });
-
-    } catch (err) {
-        return res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-app.get('/api/reports/history', authenticateToken, (req, res) => {
     let targetPatientId = req.user.customId;
 
     if (req.user.role === 'doctor') {
-        targetPatientId = req.query.patientId;
-        if (!targetPatientId || !checkDoctorPermission(req.user.customId, targetPatientId)) {
-            return res.status(403).json({ success: false, error: "Unauthorized access to patient history." });
-        }
+      targetPatientId = req.body.targetPatientId;
+      if (!targetPatientId) return res.status(400).json({ error: 'Target patient ID required.' });
+
+      const grantCheck = await pool.query(
+        'SELECT * FROM access_permissions WHERE patient_id = $1 AND doctor_id = $2',
+        [String(targetPatientId), req.user.customId]
+      );
+      if (grantCheck.rows.length === 0) {
+        return res.status(403).json({ error: 'Unauthorized patient selection.' });
+      }
     }
 
-    const patientHistory = REPORTS.filter(r => String(r.patientCustomId).toLowerCase() === String(targetPatientId).toLowerCase());
-    return res.json({ success: true, history: patientHistory });
+    // Step 1: Safely query previous raw_text using patient_custom_id
+    let previousText = '';
+    try {
+      const prevQuery = await pool.query(
+        'SELECT raw_text FROM reports WHERE patient_custom_id = $1 ORDER BY id DESC LIMIT 1',
+        [String(targetPatientId)]
+      );
+      if (prevQuery.rows.length > 0 && prevQuery.rows[0].raw_text) {
+        previousText = prevQuery.rows[0].raw_text;
+      }
+    } catch (dbErr) {
+      console.warn('⚠️ Could not fetch previous report raw_text:', dbErr.message);
+    }
+
+    // Step 2: Forward PDF stream to Python FastAPI RAG microservice
+    console.log(`📡 Forwarding stream to RAG service: ${RAG_SERVICE_URL}`);
+    const form = new FormData();
+    form.append('file', req.file.buffer, {
+      filename: req.file.originalname || 'report.pdf',
+      contentType: req.file.mimetype || 'application/pdf'
+    });
+    form.append('previous_text', previousText);
+
+    let ragResponse;
+    try {
+      ragResponse = await axios.post(RAG_SERVICE_URL, form, {
+        headers: { ...form.getHeaders() }
+      });
+    } catch (ragErr) {
+      console.error('❌ RAG Microservice Communication Failure:', ragErr.response?.data || ragErr.message);
+      return res.status(500).json({
+        error: 'RAG microservice at 127.0.0.1:8000 is unreachable or returned an error.'
+      });
+    }
+
+    const { analysis, comparison, raw_text } = ragResponse.data;
+    const formattedTimestamp = new Date().toISOString().replace('T', ' ').substring(0, 16);
+
+    // Step 3: Insert record using your exact column names
+    const inserted = await pool.query(
+      `INSERT INTO reports (patient_custom_id, uploaded_by, filename, timestamp, analysis, comparison, raw_text)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`,
+      [
+        String(targetPatientId),
+        req.user.name || req.user.customId,
+        req.file.originalname,
+        formattedTimestamp,
+        analysis || 'No summary generated.',
+        comparison || '📌 Baseline Report: No previous report on file.',
+        raw_text || ''
+      ]
+    );
+
+    return res.json({
+      success: true,
+      analysis,
+      comparison,
+      record: {
+        id: inserted.rows[0].id,
+        filename: req.file.originalname,
+        timestamp: formattedTimestamp
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Upload Processing Error:', err);
+    return res.status(500).json({ error: err.message || 'Error processing document upload.' });
+  }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Gateway running on Port ${PORT}`);
-});
+// Start Node Express Server
+const PORT = process.env.PORT || 5000;
+
+async function startServer() {
+  await initDb();
+  app.listen(PORT, () => {
+    console.log(`🚀 MedGenesis Node backend listening on port ${PORT}`);
+  });
+}
+
+startServer();

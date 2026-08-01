@@ -1,152 +1,205 @@
 import os
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import io
+import re
+import pypdf
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from dotenv import load_dotenv
 
-# Modernized LangChain Imports
-from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import PromptTemplate
 
-# 1. Load configuration and Gemini API Key
+# Load environment variables (.env file)
 load_dotenv()
-gemini_key = os.getenv("GEMINI_API_KEY")
-if not gemini_key:
-    raise ValueError(
-        "CRITICAL ERROR: GEMINI_API_KEY missing from .env file! "
-        "Create rag-service/.env with a line like: GEMINI_API_KEY=your_key_here"
+
+app = FastAPI(title="MedGenesis Dynamic RAG Service")
+
+# ==========================================
+# 1. INITIALIZE EMBEDDINGS & CHROMADB
+# ==========================================
+print("🔄 Initializing embeddings and loading ChromaDB vector store...")
+embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+try:
+    vector_db = Chroma(
+        persist_directory="./chroma_db", 
+        embedding_function=embedding_function
     )
+    retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+    print("✅ ChromaDB vector store successfully connected.")
+except Exception as e:
+    print(f"⚠️ Warning: Could not load ChromaDB ({e}). Pipeline operating without vector retrieval.")
+    retriever = None
 
-# Global Reference Knowledge Base Store
-base_retriever = None
-startup_error = None  # tracked so /health can report *why* the service is degraded
+# ==========================================
+# 2. CONFIGURE GEMINI MODEL
+# ==========================================
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Modern FastAPI lifespan context (replaces deprecated @app.on_event)
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Seeds the global background vector database on startup without PyTorch C++ DLLs."""
-    global base_retriever, startup_error
-    print("🔄 Ingesting Core Clinical Reference Guidelines...")
+if not GEMINI_API_KEY:
+    print("⚠️ WARNING: GEMINI_API_KEY is missing from environment configuration!")
 
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",  # ✅ Confirmed active on your key
+    google_api_key=GEMINI_API_KEY,
+    temperature=0.2  # Low temperature for medical factual precision
+)
+
+# ==========================================
+# 3. DYNAMIC PROMPT TEMPLATES
+# ==========================================
+DYNAMIC_RAG_PROMPT = """
+You are an expert, empathetic medical AI assistant for MedGenesis.
+Your task is to analyze the patient's medical lab report text and summarize it in clear, non-jargon language for a patient.
+
+CRITICAL INSTRUCTION:
+- DO NOT copy or paste raw document headers, doctor signatures, clinic addresses, or raw text tables.
+- Dynamically parse all test names, numerical values, units, and reference ranges found in the report text.
+- Ground your medical explanations strictly in the provided WHO and MedlinePlus reference context when relevant.
+
+VERIFIED MEDICAL REFERENCE CONTEXT:
+{context}
+
+PATIENT LAB REPORT TEXT:
+{question}
+
+Formulate your response strictly using these sections and markdown formatting:
+
+# 🟢 GOOD NEWS (LOOKS NORMAL)
+- Dynamically list every test marker that falls within standard or reference ranges.
+- Provide the test name, reported value, and a brief 1-sentence plain-English explanation of why this marker is important for health.
+
+# ⚠️ THINGS TO WATCH OUT FOR (NEEDS ATTENTION)
+- Dynamically list every test marker flagged as HIGH, LOW, or BORDERLINE.
+- For each flagged item, format as follows:
+  * **[Test Name]**: [Reported Value] (Reference Range: [Min - Max]) — [Status: High/Low/Borderline]
+  * **What it means**: Plain-language explanation of what this test measures.
+  * **Possible factors**: Common non-diagnostic reasons for this result (e.g., hydration, dietary influences, fatigue).
+
+# 🚀 PRACTICAL NEXT STEPS
+- Provide 3 safe, non-clinical recommendations (e.g., maintaining hydration, rest, preparing questions for their physician).
+"""
+
+COMPARISON_PROMPT = """
+You are a medical trend comparator AI for MedGenesis.
+Compare the PREVIOUS medical report against the CURRENT medical report dynamically.
+
+PREVIOUS REPORT TEXT:
+{previous_text}
+
+CURRENT REPORT TEXT:
+{current_text}
+
+INSTRUCTIONS:
+Provide a concise comparison highlighting key metric changes between the two reports:
+
+# 📈 HEALTH TREND ANALYSIS
+- Compare matching test markers found in both reports using this format:
+  * **[Marker Name]**: [Previous Value] ➔ [Current Value] (Status: Improved / Stable / Needs Attention)
+- Summarize overall health trends observed across the reports in plain English.
+"""
+
+prompt_template = PromptTemplate(
+    template=DYNAMIC_RAG_PROMPT, 
+    input_variables=["context", "question"]
+)
+
+comparison_template = PromptTemplate(
+    template=COMPARISON_PROMPT,
+    input_variables=["previous_text", "current_text"]
+)
+
+# ==========================================
+# 4. HELPER: PDF TEXT EXTRACTION
+# ==========================================
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    """Extracts and sanitizes text from incoming PDF byte stream."""
     try:
-        DOCS_DIR = "./documents"
-        DB_DIR = "./vector_store_genai"
-        os.makedirs(DOCS_DIR, exist_ok=True)
-
-        guideline_path = os.path.join(DOCS_DIR, "medical_guidelines.txt")
-
-        # Fallback to create dummy reference file if missing
-        if not os.path.exists(guideline_path):
-            with open(guideline_path, "w") as f:
-                f.write("Standard Medical Metric Guidelines. Normal Glucose: 70-100 mg/dL. Normal WBC: 4.5-11.0 x10^3/uL. Normal CRP: < 3.0 mg/L.")
-
-        loader = TextLoader(guideline_path)
-        documents = loader.load()
-
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        split_docs = text_splitter.split_documents(documents)
-
-        print("📥 Initializing Google API Cloud Embeddings...")
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        extracted_pages = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                extracted_pages.append(text)
         
-        # Updated embedding model to active gemini-embedding-001 target
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/gemini-embedding-001",
-            google_api_key=gemini_key
-        )
-
-        vector_store = Chroma.from_documents(split_docs, embeddings, persist_directory=DB_DIR)
-        base_retriever = vector_store.as_retriever(search_kwargs={"k": 2})
-        print("🚀 Standard Knowledge Base Vector Mapping Seeded Successfully.")
-
+        full_text = "\n".join(extracted_pages)
+        
+        # Strip header/footer noise and repetitive page numbers
+        cleaned_text = re.sub(r'Page\s+\d+\s+of\s+\d+', '', full_text, flags=re.IGNORECASE)
+        cleaned_text = re.sub(r'--\s*\d+\s*of\s*\d+\s*--', '', cleaned_text)
+        cleaned_text = re.sub(r'\n\s*\n', '\n', cleaned_text)
+        
+        return cleaned_text.strip()
     except Exception as e:
-        startup_error = str(e)
-        print(f"❌ RAG startup failed: {startup_error}")
+        print(f"❌ Error extracting PDF text: {e}")
+        return ""
 
-    yield  # Hand control to FastAPI app
-    print("🛑 Shutting down MedGenesis RAG Service...")
-
-# Initialize FastAPI App with Lifespan
-app = FastAPI(title="MedGenesis Spontaneous RAG Service", lifespan=lifespan)
-
-class ReportPayload(BaseModel):
-    medical_terms: str
-
-def format_docs(docs):
-    """Combines retrieved background guidelines segments into a single cohesive context block."""
-    return "\n\n".join(doc.page_content for doc in docs)
-
-@app.get("/health")
-async def health_check():
-    if startup_error:
-        return {"status": "degraded", "ready": False, "error": startup_error}
-    if base_retriever is None:
-        return {"status": "starting", "ready": False}
-    return {"status": "ok", "ready": True}
-
-# ==========================================================
-# ⚡ SPONTANEOUS EXECUTION PIPELINE
-# ==========================================================
+# ==========================================
+# 5. FASTAPI ANALYZE ENDPOINT
+# ==========================================
 @app.post("/api/analyze")
-async def generate_explanation(payload: ReportPayload):
-    """
-    POST Endpoint exposed to the main Node.js backend gateway.
-    Dynamically maps the input text ensuring spontaneous unique outputs per report.
-    """
-    if startup_error:
-        raise HTTPException(status_code=500, detail=f"RAG service failed to initialize: {startup_error}")
-    if not base_retriever:
-        raise HTTPException(status_code=503, detail="Core vector indexes are still initializing. Try again shortly.")
-
+async def analyze_medical_report(
+    file: UploadFile = File(...),
+    previous_text: str = Form("")
+):
     try:
-        # Retrieve guideline context using modern .invoke()
-        static_context_docs = base_retriever.invoke(payload.medical_terms)
-        formatted_static_context = format_docs(static_context_docs)
+        # Step A: Extract PDF Text dynamically
+        file_bytes = await file.read()
+        raw_report_text = extract_text_from_pdf_bytes(file_bytes)
 
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=gemini_key,
-            temperature=0.4
+        if not raw_report_text or len(raw_report_text) < 20:
+            return {
+                "success": False,
+                "analysis": "⚠️ **Unable to extract text.**\n\nThe uploaded document could not be read. Please ensure it is a digital PDF with selectable text.",
+                "comparison": "📌 Baseline Report: No text extracted.",
+                "raw_text": ""
+            }
+
+        # Step B: Dynamically Retrieve Matching Context from Vector Store
+        context_text = "No specific reference documentation retrieved."
+        if retriever:
+            try:
+                retrieved_docs = retriever.invoke(raw_report_text)
+                if retrieved_docs:
+                    context_text = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                    print(f"🔎 Retrieved {len(retrieved_docs)} context chunks from ChromaDB.")
+            except Exception as re_err:
+                print(f"⚠️ Retrieval error ignored: {re_err}")
+
+        # Step C: Format Grounded Prompt & Invoke Gemini
+        formatted_prompt = prompt_template.format(
+            context=context_text,
+            question=raw_report_text
         )
 
-        spontaneous_prompt = ChatPromptTemplate.from_messages([
-            ("system", (
-                "You are an expert clinical AI assistant for MedGenesis. Your task is to analyze "
-                "the exact patient case input provided. Do not use generic placeholders or hardcoded scripts. "
-                "Evaluate the direct parameters presented in the report, using the baseline reference context "
-                "solely to contrast normal boundaries.\n\n"
-                "Baseline Reference Standards:\n{baseline_standards}\n\n"
-                "Requirements:\n"
-                "- CLINICAL SUMMARY: Detail the explicit data values found in the report. Flag anomalies natively.\n"
-                "- PATIENT-FRIENDLY SUMMARY: Translate these specific findings into plain, comprehensive, and clear prose.\n"
-                "- PROGRESSION ANALYSIS: If multiple metrics or past dates are visible, evaluate the directional tracking delta."
-            )),
-            ("human", "{spontaneous_report_data}")
-        ])
+        print("🤖 Generating dynamic LLM synthesis...")
+        ai_response = llm.invoke(formatted_prompt)
+        analysis_markdown = ai_response.content if hasattr(ai_response, 'content') else str(ai_response)
 
-        dynamic_chain = (
-            spontaneous_prompt
-            | llm
-            | StrOutputParser()
-        )
+        # Step D: Dynamic Historical Comparison (if previous report available)
+        comparison_markdown = "📌 Baseline Report: No previous medical document on file to compare with."
+        if previous_text and len(previous_text.strip()) > 20:
+            print("📈 Generating historical trend comparison...")
+            comp_prompt = comparison_template.format(
+                previous_text=previous_text,
+                current_text=raw_report_text
+            )
+            comp_result = llm.invoke(comp_prompt)
+            comparison_markdown = comp_result.content if hasattr(comp_result, 'content') else str(comp_result)
 
-        response_text = dynamic_chain.invoke({
-            "baseline_standards": formatted_static_context,
-            "spontaneous_report_data": payload.medical_terms
-        })
-
+        # Step E: Return structured JSON
         return {
-            "status": "success",
-            "ai_analysis": response_text
+            "success": True,
+            "analysis": analysis_markdown,
+            "comparison": comparison_markdown,
+            "raw_text": raw_report_text
         }
 
     except Exception as e:
-        print(f"❌ Pipeline Execution Faulted: {str(e)}")
+        print(f"❌ Execution Error in RAG Service: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
