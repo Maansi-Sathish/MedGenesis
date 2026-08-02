@@ -28,13 +28,26 @@ const RAG_SERVICE_URL = `${cleanRagBase}/api/analyze`;
 // 1. POSTGRESQL DATABASE CONNECTION
 // ==========================================
 const { Pool } = pg;
-const pool = new Pool({
-  user: process.env.PGUSER || 'postgres',
-  host: process.env.PGHOST || 'localhost',
-  database: process.env.PGDATABASE || 'medgenesis',
-  password: process.env.PGPASSWORD || '123456',
-  port: parseInt(process.env.PGPORT || '5432', 10),
-});
+
+// Render's managed Postgres is typically provided as a single DATABASE_URL
+// connection string (found on the medgenesis-db service's "Connect" tab),
+// and requires SSL for connections. Fall back to individual PG* vars for
+// local development, where SSL is not needed.
+const pool = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
+    })
+  : new Pool({
+      user: process.env.PGUSER || 'postgres',
+      host: process.env.PGHOST || 'localhost',
+      database: process.env.PGDATABASE || 'medgenesis',
+      password: process.env.PGPASSWORD || '123456',
+      port: parseInt(process.env.PGPORT || '5432', 10),
+      ssl: (process.env.PGHOST && process.env.PGHOST !== 'localhost')
+        ? { rejectUnauthorized: false }
+        : false
+    });
 
 // Verify & Patch Schema
 async function initDb() {
