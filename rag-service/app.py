@@ -38,9 +38,8 @@ if not GEMINI_API_KEY:
 
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/gemini-embedding-001",
-    google_api_key=GEMINI_API_KEY
+    google_api_key=os.getenv("GEMINI_API_KEY")
 )
-
 retriever = None
 try:
     if os.path.exists("./chroma_db"):
@@ -59,9 +58,9 @@ except Exception as e:
 # 2. CONFIGURE GEMINI MODEL
 # ==========================================
 llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",  # updated from retired gemini-1.5-flash
+    model="gemini-3.5-flash",  # ✅ Updated: gemini-1.5-flash was retired by Google
     google_api_key=GEMINI_API_KEY,
-    temperature=0.2
+    temperature=0.2  # Low temperature for medical factual precision
 )
 
 # ==========================================
@@ -154,6 +153,33 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         return ""
 
 # ==========================================
+# 4b. HELPER: SAFE LLM TEXT EXTRACTION
+# ==========================================
+def extract_text(response) -> str:
+    """
+    Safely extracts plain text from an LLM response.
+    Newer Gemini models (e.g. gemini-3.5-flash) can return `.content` as a
+    list of structured content blocks (e.g. [{"type": "text", "text": "...", "extras": {...}}])
+    instead of a plain string like older models did. This normalizes both cases.
+    """
+    content = getattr(response, "content", response)
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts).strip()
+
+    return str(content)
+
+# ==========================================
 # 5. FASTAPI ANALYZE ENDPOINT
 # ==========================================
 @app.post("/api/analyze")
@@ -193,7 +219,7 @@ async def analyze_medical_report(
 
         print("🤖 Generating dynamic LLM synthesis...")
         ai_response = llm.invoke(formatted_prompt)
-        analysis_markdown = ai_response.content if hasattr(ai_response, 'content') else str(ai_response)
+        analysis_markdown = extract_text(ai_response)
 
         # Step D: Dynamic Historical Comparison (if previous report available)
         comparison_markdown = "📌 Baseline Report: No previous medical document on file to compare with."
@@ -204,7 +230,7 @@ async def analyze_medical_report(
                 current_text=raw_report_text
             )
             comp_result = llm.invoke(comp_prompt)
-            comparison_markdown = comp_result.content if hasattr(comp_result, 'content') else str(comp_result)
+            comparison_markdown = extract_text(comp_result)
 
         # Step E: Return structured JSON
         return {
