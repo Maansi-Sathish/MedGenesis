@@ -37,10 +37,9 @@ if not GEMINI_API_KEY:
     print("⚠️ WARNING: GEMINI_API_KEY is missing from environment configuration!")
 
 embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/text-embedding-004",
-    google_api_key=GEMINI_API_KEY
+    model="models/gemini-embedding-001",
+    google_api_key=os.getenv("GEMINI_API_KEY")
 )
-
 retriever = None
 try:
     if os.path.exists("./chroma_db"):
