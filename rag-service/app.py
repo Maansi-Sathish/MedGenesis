@@ -175,17 +175,26 @@ def _pull_text_from_blocks(content):
 def extract_text(response) -> str:
     """
     Safely extracts plain text from an LLM response.
-    Newer Gemini models (e.g. gemini-3.5-flash) can return `.content` as:
-      - a plain string (older models), OR
-      - a real Python list of content blocks, e.g.
-        [{"type": "text", "text": "...", "extras": {...}}], OR
-      - a STRING that itself is a JSON-encoded version of that list
-        (e.g. '[{"type": "text", "text": "...", "extras": {...}}]').
-    This handles all three cases.
+
+    Newer Gemini models (e.g. gemini-3.5-flash) return "thinking" content as
+    structured blocks (e.g. [{"type": "text", "text": "...", "extras": {"signature": "..."}}])
+    instead of a plain string. langchain_core ships an official `.text` property
+    on messages that is specifically designed to handle this — we use it first
+    since it's maintained upstream and matches the exact block format we've seen.
     """
+    # --- Preferred path: langchain_core's official `.text` accessor ---
+    try:
+        official_text = getattr(response, "text", None)
+        if official_text is not None:
+            text_value = str(official_text).strip()
+            if text_value:
+                return text_value
+    except Exception as e:
+        print(f"⚠️ .text accessor failed, falling back: {e}")
+
+    # --- Fallback: manual parsing (handles raw list/dict, or a JSON-encoded string) ---
     content = getattr(response, "content", response)
 
-    # If it's a string, check whether it's actually JSON-encoded blocks in disguise.
     if isinstance(content, str):
         stripped = content.strip()
         if stripped.startswith("[") or stripped.startswith("{"):
@@ -198,7 +207,6 @@ def extract_text(response) -> str:
                 pass  # not actually JSON — just a normal string, fall through
         return content
 
-    # Real list/dict of content blocks
     if isinstance(content, (list, dict)):
         extracted = _pull_text_from_blocks(content)
         if extracted:
@@ -246,7 +254,10 @@ async def analyze_medical_report(
 
         print("🤖 Generating dynamic LLM synthesis...")
         ai_response = llm.invoke(formatted_prompt)
+        print(f"🔍 DEBUG ai_response.content type: {type(ai_response.content)}")
+        print(f"🔍 DEBUG ai_response.content preview: {str(ai_response.content)[:300]}")
         analysis_markdown = extract_text(ai_response)
+        print(f"🔍 DEBUG extracted analysis_markdown preview: {analysis_markdown[:200]}")
 
         # Step D: Dynamic Historical Comparison (if previous report available)
         comparison_markdown = "📌 Baseline Report: No previous medical document on file to compare with."
