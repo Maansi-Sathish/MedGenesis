@@ -3,6 +3,7 @@ import io
 import re
 import pypdf
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from langchain_chroma import Chroma
@@ -15,36 +16,50 @@ load_dotenv()
 app = FastAPI(title="MedGenesis Dynamic RAG Service")
 
 # ==========================================
+# 0. ADD CORS MIDDLEWARE (CRITICAL FIX)
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows requests from Node backend and web frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==========================================
 # 1. INITIALIZE EMBEDDINGS & CHROMADB
 # ==========================================
 print("🔄 Initializing embeddings and loading ChromaDB vector store...")
 
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/text-embedding-004",
-    google_api_key=os.getenv("GEMINI_API_KEY")
-)
-
-try:
-    vector_db = Chroma(
-        persist_directory="./chroma_db", 
-        embedding_function=embeddings
-    )
-    retriever = vector_db.as_retriever(search_kwargs={"k": 3})
-    print("✅ ChromaDB vector store successfully connected.")
-except Exception as e:
-    print(f"⚠️ Warning: Could not load ChromaDB ({e}). Pipeline operating without vector retrieval.")
-    retriever = None
-
-# ==========================================
-# 2. CONFIGURE GEMINI MODEL
-# ==========================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
     print("⚠️ WARNING: GEMINI_API_KEY is missing from environment configuration!")
 
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/text-embedding-004",
+    google_api_key=GEMINI_API_KEY
+)
+
+retriever = None
+try:
+    if os.path.exists("./chroma_db"):
+        vector_db = Chroma(
+            persist_directory="./chroma_db", 
+            embedding_function=embeddings
+        )
+        retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+        print("✅ ChromaDB vector store successfully connected.")
+    else:
+        print("⚠️ Warning: './chroma_db' folder not found. Operating without vector retrieval.")
+except Exception as e:
+    print(f"⚠️ Warning: Could not load ChromaDB ({e}). Pipeline operating without vector retrieval.")
+
+# ==========================================
+# 2. CONFIGURE GEMINI MODEL
+# ==========================================
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",  # ✅ Active model
+    model="gemini-1.5-flash",  # ✅ Recommended standard Gemini Flash model
     google_api_key=GEMINI_API_KEY,
     temperature=0.2  # Low temperature for medical factual precision
 )
