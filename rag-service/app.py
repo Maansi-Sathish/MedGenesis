@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import json
 import pypdf
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -155,27 +156,53 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 # ==========================================
 # 4b. HELPER: SAFE LLM TEXT EXTRACTION
 # ==========================================
-def extract_text(response) -> str:
-    """
-    Safely extracts plain text from an LLM response.
-    Newer Gemini models (e.g. gemini-3.5-flash) can return `.content` as a
-    list of structured content blocks (e.g. [{"type": "text", "text": "...", "extras": {...}}])
-    instead of a plain string like older models did. This normalizes both cases.
-    """
-    content = getattr(response, "content", response)
-
-    if isinstance(content, str):
-        return content
-
+def _pull_text_from_blocks(content):
+    """Given a list/dict of structured content blocks, pull out just the text."""
+    if isinstance(content, dict):
+        if content.get("type") == "text":
+            return content.get("text", "")
+        return ""
     if isinstance(content, list):
         parts = []
         for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts).strip()
+            parts.append(_pull_text_from_blocks(block))
+        return "\n".join(p for p in parts if p).strip()
+    if isinstance(content, str):
+        return content
+    return str(content)
+
+
+def extract_text(response) -> str:
+    """
+    Safely extracts plain text from an LLM response.
+    Newer Gemini models (e.g. gemini-3.5-flash) can return `.content` as:
+      - a plain string (older models), OR
+      - a real Python list of content blocks, e.g.
+        [{"type": "text", "text": "...", "extras": {...}}], OR
+      - a STRING that itself is a JSON-encoded version of that list
+        (e.g. '[{"type": "text", "text": "...", "extras": {...}}]').
+    This handles all three cases.
+    """
+    content = getattr(response, "content", response)
+
+    # If it's a string, check whether it's actually JSON-encoded blocks in disguise.
+    if isinstance(content, str):
+        stripped = content.strip()
+        if stripped.startswith("[") or stripped.startswith("{"):
+            try:
+                parsed = json.loads(stripped)
+                extracted = _pull_text_from_blocks(parsed)
+                if extracted:
+                    return extracted
+            except (json.JSONDecodeError, TypeError):
+                pass  # not actually JSON — just a normal string, fall through
+        return content
+
+    # Real list/dict of content blocks
+    if isinstance(content, (list, dict)):
+        extracted = _pull_text_from_blocks(content)
+        if extracted:
+            return extracted
 
     return str(content)
 
