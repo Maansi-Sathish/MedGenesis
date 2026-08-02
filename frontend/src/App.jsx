@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000/api";
+const RAW_API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+const API_BASE = `${RAW_API_BASE.replace(/\/$/, '')}/api`;
 
 // Utility function to clean bad unicode characters and zero-width spaces
 const sanitizeText = (text) => {
