@@ -38,8 +38,9 @@ if not GEMINI_API_KEY:
 
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/gemini-embedding-001",
-    google_api_key=os.getenv("GEMINI_API_KEY")
+    google_api_key=GEMINI_API_KEY
 )
+
 retriever = None
 try:
     if os.path.exists("./chroma_db"):
@@ -58,9 +59,9 @@ except Exception as e:
 # 2. CONFIGURE GEMINI MODEL
 # ==========================================
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",  # ✅ Recommended standard Gemini Flash model
+    model="gemini-3.5-flash",  # updated from retired gemini-1.5-flash
     google_api_key=GEMINI_API_KEY,
-    temperature=0.2  # Low temperature for medical factual precision
+    temperature=0.2
 )
 
 # ==========================================

@@ -16,11 +16,13 @@ app.use(express.json());
 const JWT_SECRET = process.env.JWT_SECRET || 'medgenesis_secret_key_2026';
 
 // ==========================================
-// RAG SERVICE ENDPOINT CONFIGURATION
+// RAG SERVICE ENDPOINT CONFIGURATION (FIXED)
 // ==========================================
 const rawRagUrl = process.env.RAG_SERVICE_URL || 'https://medgenesis-rag.onrender.com';
+// Strips any trailing slashes or duplicate '/api/analyze' suffixes to guarantee a clean base URL
 const cleanRagBase = rawRagUrl.replace(/\/+$/, '').replace(/\/api\/analyze$/, '');
-const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'https://medgenesis-rag.onrender.com';
+// Constructs the exact endpoint path FastAPI expects
+const RAG_SERVICE_URL = `${cleanRagBase}/api/analyze`;
 
 // ==========================================
 // 1. POSTGRESQL DATABASE CONNECTION
