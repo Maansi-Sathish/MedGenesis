@@ -6,7 +6,31 @@ const API_BASE = "http://localhost:5000/api";
 
 // Utility function to clean bad unicode characters and zero-width spaces
 const sanitizeText = (text) => {
-  if (!text || typeof text !== 'string') return '';
+  // Defensive: handle non-string content instead of silently returning ''
+  if (text === null || text === undefined || text === '') {
+    return '';
+  }
+  if (typeof text !== 'string') {
+    console.warn('⚠️ sanitizeText received non-string content:', text);
+    // Try to salvage something displayable instead of showing nothing
+    try {
+      if (Array.isArray(text)) {
+        // Handle content-block-style arrays, e.g. [{ type: 'text', text: '...' }]
+        text = text
+          .map((block) => (typeof block === 'string' ? block : block?.text || ''))
+          .filter(Boolean)
+          .join('\n');
+      } else if (typeof text === 'object' && text.text) {
+        text = text.text;
+      } else {
+        text = JSON.stringify(text);
+      }
+    } catch (e) {
+      console.error('❌ Failed to coerce non-string content:', e);
+      return '';
+    }
+  }
+  if (typeof text !== 'string' || !text) return '';
   return text
     .replace(/[\u200B-\u200D\uFEFF]/g, '') // Remove zero-width spaces
     .replace(/\r\n/g, '\n')                 // Normalize line breaks
@@ -237,6 +261,10 @@ function App() {
           'Content-Type': 'multipart/form-data'
         }
       });
+
+      console.log('📥 Upload response received:', res.data);
+      console.log('📥 analysis type:', typeof res.data.analysis, '| value:', res.data.analysis);
+      console.log('📥 comparison type:', typeof res.data.comparison, '| value:', res.data.comparison);
 
       if (res.data.success) {
         setActiveAnalysis(res.data.analysis || '');
