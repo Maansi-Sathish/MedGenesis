@@ -15,8 +15,10 @@ app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'medgenesis_secret_key_2026';
 
-const RAG_SERVICE_URL = 'https://medgenesis-rag.onrender.com/api/analyze';
-// Strip trailing slash or endpoint path to form a clean full endpoint
+// ==========================================
+// RAG SERVICE ENDPOINT CONFIGURATION
+// ==========================================
+const rawRagUrl = process.env.RAG_SERVICE_URL || 'https://medgenesis-rag.onrender.com';
 const cleanRagBase = rawRagUrl.replace(/\/+$/, '').replace(/\/api\/analyze$/, '');
 const RAG_SERVICE_URL = `${cleanRagBase}/api/analyze`;
 
