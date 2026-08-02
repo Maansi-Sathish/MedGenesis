@@ -14,7 +14,12 @@ app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'medgenesis_secret_key_2026';
-const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000/api/analyze';
+
+// Read base URL or full endpoint dynamically from env
+const rawRagUrl = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000';
+// Strip trailing slash or endpoint path to form a clean full endpoint
+const cleanRagBase = rawRagUrl.replace(/\/+$/, '').replace(/\/api\/analyze$/, '');
+const RAG_SERVICE_URL = `${cleanRagBase}/api/analyze`;
 
 // ==========================================
 // 1. POSTGRESQL DATABASE CONNECTION
@@ -309,7 +314,7 @@ app.post('/api/reports/upload-pdf', authenticateToken, upload.single('report'), 
     } catch (ragErr) {
       console.error('❌ RAG Microservice Communication Failure:', ragErr.response?.data || ragErr.message);
       return res.status(500).json({
-        error: 'RAG microservice at 127.0.0.1:8000 is unreachable or returned an error.'
+        error: `RAG microservice at ${RAG_SERVICE_URL} is unreachable or returned an error.`
       });
     }
 
