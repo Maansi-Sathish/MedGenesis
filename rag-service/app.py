@@ -6,8 +6,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from dotenv import load_dotenv
 
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_core.prompts import PromptTemplate
 
 # Load environment variables (.env file)
@@ -19,12 +18,16 @@ app = FastAPI(title="MedGenesis Dynamic RAG Service")
 # 1. INITIALIZE EMBEDDINGS & CHROMADB
 # ==========================================
 print("🔄 Initializing embeddings and loading ChromaDB vector store...")
-embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="models/text-embedding-004",
+    google_api_key=os.getenv("GEMINI_API_KEY")
+)
 
 try:
     vector_db = Chroma(
         persist_directory="./chroma_db", 
-        embedding_function=embedding_function
+        embedding_function=embeddings
     )
     retriever = vector_db.as_retriever(search_kwargs={"k": 3})
     print("✅ ChromaDB vector store successfully connected.")
@@ -41,7 +44,7 @@ if not GEMINI_API_KEY:
     print("⚠️ WARNING: GEMINI_API_KEY is missing from environment configuration!")
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",  # ✅ Confirmed active on your key
+    model="gemini-2.5-flash",  # ✅ Active model
     google_api_key=GEMINI_API_KEY,
     temperature=0.2  # Low temperature for medical factual precision
 )
@@ -202,4 +205,5 @@ async def analyze_medical_report(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
